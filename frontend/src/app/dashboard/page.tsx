@@ -383,6 +383,7 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
   }
 
   async function remove(id: string) {
+    if (!object) return;
     await api(`/api/records/${object.slug}/${id}`, { method: "DELETE" });
     await load();
     await onChanged();
@@ -1047,7 +1048,7 @@ function AutomationsView() {
               <span className="font-mono">when {r.trigger}</span>
               {r.object && <span className="font-mono"> on {r.object}</span>}
               {Object.keys(r.condition).length > 0 && (
-                <span className="font-mono"> if {r.condition.field} = {String(r.condition.equals ?? "")}</span>
+                <span className="font-mono"> if {String(r.condition.field ?? "")} = {String(r.condition.equals ?? "")}</span>
               )}
               <span> → </span>
               {r.actions.map((a, i) => (
