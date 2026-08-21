@@ -2,6 +2,8 @@
 
 **The open-source, plugin-first business OS.**
 
+🌐 **Live:** [truss-two.vercel.app](https://truss-two.vercel.app) · **Repo:** [github.com/trusshq/truss](https://github.com/trusshq/truss)
+
 A truss is a structural frame where every member carries load, so the whole holds far more than any single piece. Truss is that for your business: a small kernel where **every app is a plugin** — install what you need, disable what you don't, bring your own AI keys, connect your own databases.
 
 > *The structure your business runs on.*
