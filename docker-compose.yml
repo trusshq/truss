@@ -1,0 +1,40 @@
+# Truss — self-hosted stack (kernel + Postgres + Redis)
+# Frontend is deployed separately (Vercel) or run with `npm run dev`.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: truss
+      POSTGRES_PASSWORD: "truss"
+      POSTGRES_DB: truss
+    ports:
+      - "5432:5432"
+    volumes:
+      - truss_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U truss"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  kernel:
+    build: ./kernel
+    environment:
+      TRUSS_DATABASE_URL: postgresql+asyncpg://truss:truss@db:5432/truss
+      TRUSS_JWT_SECRET: "change-me-in-production"
+      TRUSS_CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./plugins:/app/plugins:ro
+
+volumes:
+  truss_pg:

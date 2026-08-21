@@ -1,0 +1,77 @@
+{
+  "id": "truss-tasks",
+  "name": "Truss Tasks",
+  "version": "0.1.0",
+  "description": "Light task management: to-dos with status, priority, due dates, and tags. Kanban-ready. Built as a declarative plugin on the Truss kernel.",
+  "author": "Truss",
+  "icon": "✅",
+  "permissions": ["objects:write", "records:write", "events:emit"],
+  "objects": [
+    {
+      "slug": "task",
+      "name": "Task",
+      "name_plural": "Tasks",
+      "description": "Work items to get done",
+      "icon": "✅",
+      "fields": [
+        { "slug": "title", "name": "Title", "type": "text", "required": true, "position": 0 },
+        { "slug": "description", "name": "Description", "type": "textarea", "position": 1 },
+        { "slug": "status", "name": "Status", "type": "select", "position": 2, "options": { "choices": ["To Do", "In Progress", "Done"] } },
+        { "slug": "priority", "name": "Priority", "type": "select", "position": 3, "options": { "choices": ["Low", "Medium", "High", "Urgent"] } },
+        { "slug": "due_date", "name": "Due Date", "type": "date", "position": 4 },
+        { "slug": "tags", "name": "Tags", "type": "multiselect", "position": 5, "options": { "choices": ["bug", "feature", "chore", "docs", "urgent", "follow-up"] } },
+        { "slug": "notes", "name": "Notes", "type": "textarea", "position": 6 }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "slug": "create_task",
+      "name": "Create Task",
+      "description": "Create a new task",
+      "action": "create_record",
+      "object": "task",
+      "params": [
+        { "name": "title", "type": "string", "description": "Task title", "required": true },
+        { "name": "description", "type": "string", "description": "Task description" },
+        { "name": "status", "type": "string", "description": "To Do, In Progress, or Done" },
+        { "name": "priority", "type": "string", "description": "Low, Medium, High, or Urgent" }
+      ]
+    },
+    {
+      "slug": "complete_task",
+      "name": "Complete Task",
+      "description": "Mark a task as done",
+      "action": "update_record",
+      "object": "task",
+      "params": [
+        { "name": "record_id", "type": "string", "description": "Task id", "required": true },
+        { "name": "status", "type": "string", "description": "Set to Done", "required": true }
+      ]
+    },
+    {
+      "slug": "search_tasks",
+      "name": "Search Tasks",
+      "description": "Search tasks by text",
+      "action": "query_records",
+      "object": "task",
+      "params": [
+        { "name": "search", "type": "string", "description": "Search text" }
+      ]
+    }
+  ],
+  "automations": [
+    {
+      "slug": "task_completed_event",
+      "name": "Emit event when task is completed",
+      "trigger": "record.updated",
+      "object": "task",
+      "condition": { "field": "status", "equals": "Done" },
+      "actions": [{ "action": "emit_event", "type": "task.completed" }]
+    }
+  ],
+  "ui": [
+    { "slug": "tasks-table", "label": "Tasks", "icon": "✅", "view": "table", "object": "task" },
+    { "slug": "tasks-kanban", "label": "Task Board", "icon": "📋", "view": "kanban", "object": "task", "config": { "group_by": "status" } }
+  ]
+}

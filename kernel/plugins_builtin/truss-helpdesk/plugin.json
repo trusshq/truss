@@ -1,0 +1,86 @@
+{
+  "id": "truss-helpdesk",
+  "name": "Truss Helpdesk",
+  "version": "0.1.0",
+  "description": "Helpdesk-lite: support tickets with status, priority, and category. Built as a declarative plugin on the Truss kernel.",
+  "author": "Truss",
+  "icon": "🎧",
+  "permissions": ["objects:write", "records:write", "events:emit"],
+  "objects": [
+    {
+      "slug": "ticket",
+      "name": "Ticket",
+      "name_plural": "Tickets",
+      "description": "Customer support requests",
+      "icon": "🎧",
+      "fields": [
+        { "slug": "subject", "name": "Subject", "type": "text", "required": true, "position": 0 },
+        { "slug": "description", "name": "Description", "type": "textarea", "position": 1 },
+        { "slug": "requester_email", "name": "Requester Email", "type": "email", "position": 2 },
+        { "slug": "status", "name": "Status", "type": "select", "position": 3, "options": { "choices": ["Open", "Pending", "Resolved", "Closed"] } },
+        { "slug": "priority", "name": "Priority", "type": "select", "position": 4, "options": { "choices": ["Low", "Normal", "High", "Urgent"] } },
+        { "slug": "category", "name": "Category", "type": "select", "position": 5, "options": { "choices": ["Billing", "Technical", "Account", "Feature Request", "Other"] } },
+        { "slug": "notes", "name": "Internal Notes", "type": "textarea", "position": 6 }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "slug": "create_ticket",
+      "name": "Create Ticket",
+      "description": "Open a new support ticket",
+      "action": "create_record",
+      "object": "ticket",
+      "params": [
+        { "name": "subject", "type": "string", "description": "Ticket subject", "required": true },
+        { "name": "description", "type": "string", "description": "Ticket description" },
+        { "name": "requester_email", "type": "string", "description": "Requester email" },
+        { "name": "priority", "type": "string", "description": "Low, Normal, High, or Urgent" },
+        { "name": "category", "type": "string", "description": "Billing, Technical, Account, Feature Request, or Other" }
+      ]
+    },
+    {
+      "slug": "resolve_ticket",
+      "name": "Resolve Ticket",
+      "description": "Mark a ticket as resolved",
+      "action": "update_record",
+      "object": "ticket",
+      "params": [
+        { "name": "record_id", "type": "string", "description": "Ticket id", "required": true },
+        { "name": "status", "type": "string", "description": "Set to Resolved", "required": true }
+      ]
+    },
+    {
+      "slug": "search_tickets",
+      "name": "Search Tickets",
+      "description": "Search tickets by text",
+      "action": "query_records",
+      "object": "ticket",
+      "params": [
+        { "name": "search", "type": "string", "description": "Search text" }
+      ]
+    }
+  ],
+  "automations": [
+    {
+      "slug": "ticket_opened_event",
+      "name": "Emit event when ticket is opened",
+      "trigger": "record.created",
+      "object": "ticket",
+      "condition": {},
+      "actions": [{ "action": "emit_event", "type": "support.ticket_opened" }]
+    },
+    {
+      "slug": "ticket_resolved_event",
+      "name": "Emit event when ticket is resolved",
+      "trigger": "record.updated",
+      "object": "ticket",
+      "condition": { "field": "status", "equals": "Resolved" },
+      "actions": [{ "action": "emit_event", "type": "support.ticket_resolved" }]
+    }
+  ],
+  "ui": [
+    { "slug": "tickets-table", "label": "Tickets", "icon": "🎧", "view": "table", "object": "ticket" },
+    { "slug": "tickets-kanban", "label": "Ticket Queue", "icon": "🎫", "view": "kanban", "object": "ticket", "config": { "group_by": "status" } }
+  ]
+}

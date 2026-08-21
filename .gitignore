@@ -1,0 +1,36 @@
+# ---------- Python / kernel ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# local databases & secrets — never commit
+*.db
+*.sqlite3
+.env
+.env.*
+!.env.example
+
+# ---------- Node / frontend ----------
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# ---------- OS / editor ----------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---------- logs & scratch ----------
+*.log
+logs/
+tmp/

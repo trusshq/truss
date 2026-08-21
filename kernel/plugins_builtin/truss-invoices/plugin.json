@@ -1,0 +1,86 @@
+{
+  "id": "truss-invoices",
+  "name": "Truss Invoices",
+  "version": "0.1.0",
+  "description": "Light invoicing: create, send, and track invoices through Draft → Sent → Paid. Built as a declarative plugin on the Truss kernel.",
+  "author": "Truss",
+  "icon": "🧾",
+  "permissions": ["objects:write", "records:write", "events:emit"],
+  "objects": [
+    {
+      "slug": "invoice",
+      "name": "Invoice",
+      "name_plural": "Invoices",
+      "description": "Bills you send to customers",
+      "icon": "🧾",
+      "fields": [
+        { "slug": "number", "name": "Invoice #", "type": "text", "required": true, "position": 0 },
+        { "slug": "customer", "name": "Customer", "type": "text", "required": true, "position": 1 },
+        { "slug": "amount", "name": "Amount", "type": "currency", "required": true, "position": 2 },
+        { "slug": "status", "name": "Status", "type": "select", "position": 3, "options": { "choices": ["Draft", "Sent", "Paid", "Overdue", "Void"] } },
+        { "slug": "issue_date", "name": "Issue Date", "type": "date", "position": 4 },
+        { "slug": "due_date", "name": "Due Date", "type": "date", "position": 5 },
+        { "slug": "items", "name": "Line Items", "type": "textarea", "position": 6 },
+        { "slug": "notes", "name": "Notes", "type": "textarea", "position": 7 }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "slug": "create_invoice",
+      "name": "Create Invoice",
+      "description": "Create a new invoice",
+      "action": "create_record",
+      "object": "invoice",
+      "params": [
+        { "name": "number", "type": "string", "description": "Invoice number", "required": true },
+        { "name": "customer", "type": "string", "description": "Customer name", "required": true },
+        { "name": "amount", "type": "number", "description": "Invoice amount", "required": true },
+        { "name": "status", "type": "string", "description": "Draft, Sent, Paid, Overdue, or Void" }
+      ]
+    },
+    {
+      "slug": "mark_invoice_paid",
+      "name": "Mark Invoice Paid",
+      "description": "Mark an invoice as paid",
+      "action": "update_record",
+      "object": "invoice",
+      "params": [
+        { "name": "record_id", "type": "string", "description": "Invoice id", "required": true },
+        { "name": "status", "type": "string", "description": "Set to Paid", "required": true }
+      ]
+    },
+    {
+      "slug": "search_invoices",
+      "name": "Search Invoices",
+      "description": "Search invoices by text",
+      "action": "query_records",
+      "object": "invoice",
+      "params": [
+        { "name": "search", "type": "string", "description": "Search text" }
+      ]
+    }
+  ],
+  "automations": [
+    {
+      "slug": "invoice_paid_event",
+      "name": "Emit event when invoice is paid",
+      "trigger": "record.updated",
+      "object": "invoice",
+      "condition": { "field": "status", "equals": "Paid" },
+      "actions": [{ "action": "emit_event", "type": "billing.invoice_paid" }]
+    },
+    {
+      "slug": "invoice_overdue_event",
+      "name": "Emit event when invoice goes overdue",
+      "trigger": "record.updated",
+      "object": "invoice",
+      "condition": { "field": "status", "equals": "Overdue" },
+      "actions": [{ "action": "emit_event", "type": "billing.invoice_overdue" }]
+    }
+  ],
+  "ui": [
+    { "slug": "invoices-table", "label": "Invoices", "icon": "🧾", "view": "table", "object": "invoice" },
+    { "slug": "invoices-kanban", "label": "Invoice Status", "icon": "🧾", "view": "kanban", "object": "invoice", "config": { "group_by": "status" } }
+  ]
+}

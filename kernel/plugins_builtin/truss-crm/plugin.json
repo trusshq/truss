@@ -1,0 +1,121 @@
+{
+  "id": "truss-crm",
+  "name": "Truss CRM",
+  "version": "0.1.0",
+  "description": "Light CRM: companies, contacts, leads, and deals with a pipeline. Twenty-inspired, built as a declarative plugin on the Truss kernel.",
+  "author": "Truss",
+  "icon": "🤝",
+  "permissions": ["objects:write", "records:write", "events:emit"],
+  "objects": [
+    {
+      "slug": "company",
+      "name": "Company",
+      "name_plural": "Companies",
+      "description": "Organizations you do business with",
+      "icon": "🏢",
+      "fields": [
+        { "slug": "name", "name": "Name", "type": "text", "required": true, "position": 0 },
+        { "slug": "domain", "name": "Domain", "type": "url", "position": 1 },
+        { "slug": "industry", "name": "Industry", "type": "select", "position": 2, "options": { "choices": ["Software", "E-commerce", "Finance", "Healthcare", "Manufacturing", "Services", "Other"] } },
+        { "slug": "employees", "name": "Employees", "type": "number", "position": 3 },
+        { "slug": "notes", "name": "Notes", "type": "textarea", "position": 4 }
+      ]
+    },
+    {
+      "slug": "contact",
+      "name": "Contact",
+      "name_plural": "Contacts",
+      "description": "People at your companies",
+      "icon": "👤",
+      "fields": [
+        { "slug": "first_name", "name": "First Name", "type": "text", "required": true, "position": 0 },
+        { "slug": "last_name", "name": "Last Name", "type": "text", "position": 1 },
+        { "slug": "email", "name": "Email", "type": "email", "position": 2 },
+        { "slug": "phone", "name": "Phone", "type": "phone", "position": 3 },
+        { "slug": "job_title", "name": "Job Title", "type": "text", "position": 4 },
+        { "slug": "company", "name": "Company", "type": "relation", "position": 5, "options": { "related_object": "company" } }
+      ]
+    },
+    {
+      "slug": "lead",
+      "name": "Lead",
+      "name_plural": "Leads",
+      "description": "Unqualified prospects",
+      "icon": "🎯",
+      "fields": [
+        { "slug": "name", "name": "Name", "type": "text", "required": true, "position": 0 },
+        { "slug": "email", "name": "Email", "type": "email", "position": 1 },
+        { "slug": "source", "name": "Source", "type": "select", "position": 2, "options": { "choices": ["Website", "Referral", "Cold Outreach", "Event", "Social", "Other"] } },
+        { "slug": "status", "name": "Status", "type": "select", "position": 3, "options": { "choices": ["New", "Contacted", "Qualified", "Unqualified", "Converted"] } },
+        { "slug": "notes", "name": "Notes", "type": "textarea", "position": 4 }
+      ]
+    },
+    {
+      "slug": "deal",
+      "name": "Deal",
+      "name_plural": "Deals",
+      "description": "Opportunities in your pipeline",
+      "icon": "💰",
+      "fields": [
+        { "slug": "name", "name": "Deal Name", "type": "text", "required": true, "position": 0 },
+        { "slug": "stage", "name": "Stage", "type": "select", "required": true, "position": 1, "options": { "choices": ["Discovery", "Proposal", "Negotiation", "Won", "Lost"] } },
+        { "slug": "amount", "name": "Amount", "type": "currency", "position": 2 },
+        { "slug": "company", "name": "Company", "type": "relation", "position": 3, "options": { "related_object": "company" } },
+        { "slug": "close_date", "name": "Expected Close", "type": "date", "position": 4 },
+        { "slug": "notes", "name": "Notes", "type": "textarea", "position": 5 }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "slug": "create_lead",
+      "name": "Create Lead",
+      "description": "Create a new CRM lead",
+      "action": "create_record",
+      "object": "lead",
+      "params": [
+        { "name": "name", "type": "string", "description": "Lead name", "required": true },
+        { "name": "email", "type": "string", "description": "Lead email" },
+        { "name": "source", "type": "string", "description": "Where the lead came from" }
+      ]
+    },
+    {
+      "slug": "update_deal_stage",
+      "name": "Update Deal Stage",
+      "description": "Move a deal to a new pipeline stage",
+      "action": "update_record",
+      "object": "deal",
+      "params": [
+        { "name": "record_id", "type": "string", "description": "Deal id", "required": true },
+        { "name": "stage", "type": "string", "description": "New stage", "required": true }
+      ]
+    },
+    {
+      "slug": "search_contacts",
+      "name": "Search Contacts",
+      "description": "Search CRM contacts by text",
+      "action": "query_records",
+      "object": "contact",
+      "params": [
+        { "name": "search", "type": "string", "description": "Search text" }
+      ]
+    }
+  ],
+  "automations": [
+    {
+      "slug": "lead_converted_event",
+      "name": "Emit event when lead converts",
+      "trigger": "record.updated",
+      "object": "lead",
+      "condition": { "field": "status", "equals": "Converted" },
+      "actions": [{ "action": "emit_event", "type": "crm.lead_converted" }]
+    }
+  ],
+  "ui": [
+    { "slug": "crm-home", "label": "CRM", "icon": "🤝", "view": "dashboard", "config": { "objects": ["lead", "deal", "contact", "company"] } },
+    { "slug": "leads-table", "label": "Leads", "icon": "🎯", "view": "table", "object": "lead" },
+    { "slug": "deals-kanban", "label": "Pipeline", "icon": "💰", "view": "kanban", "object": "deal", "config": { "group_by": "stage" } },
+    { "slug": "contacts-table", "label": "Contacts", "icon": "👤", "view": "table", "object": "contact" },
+    { "slug": "companies-table", "label": "Companies", "icon": "🏢", "view": "table", "object": "company" }
+  ]
+}
