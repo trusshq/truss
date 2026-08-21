@@ -26,6 +26,18 @@ import {
   Zap,
 } from "lucide-react";
 import { API_BASE, checkAuth } from "@/lib/api";
+import {
+  Marquee,
+  Meteors,
+  NumberTicker,
+  Reveal,
+  ShimmerButton,
+  SpotlightCard,
+  Stagger,
+  StaggerItem,
+  WordRotate,
+} from "@/components/motion";
+import { Icon } from "@iconify/react";
 
 /* ------------------------------------------------------------------ */
 /*  Truss — landing page                                               */
@@ -92,10 +104,10 @@ const KERNEL_SPECS = [
 ];
 
 const APPS = [
-  { icon: Target, name: "CRM", id: "truss-crm", desc: "Companies, contacts, leads, deals — Twenty-inspired, pipeline-ready.", objects: 4, automations: 1 },
-  { icon: FileText, name: "Invoices", id: "truss-invoices", desc: "Draft → Sent → Paid with amounts, due dates, and billing events.", objects: 1, automations: 2 },
-  { icon: ListChecks, name: "Tasks", id: "truss-tasks", desc: "To-dos with priority, due dates, and multiselect tags. Kanban-ready.", objects: 1, automations: 1 },
-  { icon: Headphones, name: "Helpdesk", id: "truss-helpdesk", desc: "Support tickets with status, priority, and category queues.", objects: 1, automations: 2 },
+  { icon: "fluent-color:people-team-24", fallback: Target, name: "CRM", id: "truss-crm", desc: "Companies, contacts, leads, deals — Twenty-inspired, pipeline-ready.", objects: 4, automations: 1 },
+  { icon: "fluent-color:receipt-24", fallback: FileText, name: "Invoices", id: "truss-invoices", desc: "Draft → Sent → Paid with amounts, due dates, and billing events.", objects: 1, automations: 2 },
+  { icon: "fluent-color:task-list-square-24", fallback: ListChecks, name: "Tasks", id: "truss-tasks", desc: "To-dos with priority, due dates, and multiselect tags. Kanban-ready.", objects: 1, automations: 1 },
+  { icon: "fluent-color:headset-24", fallback: Headphones, name: "Helpdesk", id: "truss-helpdesk", desc: "Support tickets with status, priority, and category queues.", objects: 1, automations: 2 },
 ];
 
 const BYO = [
@@ -247,7 +259,8 @@ export default function LandingPage() {
 
       {/* ---------- hero ---------- */}
       <section className="blueprint relative overflow-hidden border-b border-border">
-        <div className="mx-auto grid max-w-6xl gap-10 px-6 pb-16 pt-16 lg:grid-cols-[1.15fr_1fr] lg:items-center lg:pb-24 lg:pt-24">
+        <Meteors count={10} />
+        <div className="relative mx-auto grid max-w-6xl gap-10 px-6 pb-16 pt-16 lg:grid-cols-[1.15fr_1fr] lg:items-center lg:pb-24 lg:pt-24">
           <div>
             <p className="animate-rise font-mono text-[11px] uppercase tracking-[0.2em] text-muted" style={{ ["--delay" as string]: "0s" }}>
               Open source · Plugin-first · Self-hosted
@@ -255,7 +268,10 @@ export default function LandingPage() {
             <h1 className="animate-rise mt-4 text-4xl font-bold leading-[1.05] tracking-tight sm:text-5xl lg:text-6xl" style={{ ["--delay" as string]: "0.08s" }}>
               One kernel carries
               <br />
-              the <span className="underline decoration-2 underline-offset-8">whole load.</span>
+              the{" "}
+              <span className="underline decoration-2 underline-offset-8">
+                <WordRotate words={["whole load.", "CRM.", "invoices.", "tickets.", "agents."]} />
+              </span>
             </h1>
             <p className="animate-rise mt-5 max-w-xl text-base leading-relaxed text-muted sm:text-lg" style={{ ["--delay" as string]: "0.16s" }}>
               Truss is the open-source business OS. CRM, invoicing, tasks, helpdesk —
@@ -281,14 +297,14 @@ export default function LandingPage() {
       </section>
 
       {/* ---------- capability ticker ---------- */}
-      <div className="overflow-hidden border-b border-border bg-card/40 py-3">
-        <div className="marquee-track flex w-max gap-8 whitespace-nowrap font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
-          {[...CAPABILITIES, ...CAPABILITIES].map((c, k) => (
-            <span key={k} className="flex items-center gap-8">
+      <div className="border-b border-border bg-card/40 py-3">
+        <Marquee>
+          {CAPABILITIES.map((c, k) => (
+            <span key={k} className="flex items-center gap-8 whitespace-nowrap font-mono text-[11px] uppercase tracking-[0.18em] text-muted">
               {c} <span className="text-foreground">▲</span>
             </span>
           ))}
-        </div>
+        </Marquee>
       </div>
 
       {/* ---------- stats band ---------- */}
@@ -296,7 +312,9 @@ export default function LandingPage() {
         <div className="mx-auto grid max-w-6xl grid-cols-2 divide-x divide-border px-6 md:grid-cols-4">
           {STATS.map((s) => (
             <div key={s.label} className="px-6 py-8 first:pl-0">
-              <div className="text-4xl font-bold tracking-tight">{s.value}</div>
+              <div className="text-4xl font-bold tracking-tight">
+                <NumberTicker value={parseInt(s.value, 10)} />
+              </div>
               <div className="mt-1 text-xs text-muted">{s.label}</div>
             </div>
           ))}
@@ -338,30 +356,32 @@ export default function LandingPage() {
               is a manifest on Truss, not a codebase. Install, enable, use. Or write your own.
             </p>
           </div>
-          <div className="grid gap-4 md:grid-cols-2">
+          <Stagger className="grid gap-4 md:grid-cols-2">
             {APPS.map((a) => (
-              <div key={a.id} className="group rounded-xl border border-border bg-card p-5 transition hover:border-border-strong">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-card-2">
-                      <a.icon size={18} />
-                    </span>
-                    <div>
-                      <div className="font-semibold">{a.name}</div>
-                      <div className="font-mono text-[10px] text-muted">{a.id}</div>
+              <StaggerItem key={a.id}>
+                <SpotlightCard className="group h-full p-5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="flex h-10 w-10 items-center justify-center rounded-lg border border-border bg-card-2">
+                        <Icon icon={a.icon} width={20} height={20} />
+                      </span>
+                      <div>
+                        <div className="font-semibold">{a.name}</div>
+                        <div className="font-mono text-[10px] text-muted">{a.id}</div>
+                      </div>
                     </div>
+                    <ArrowRight size={16} className="text-faint opacity-0 transition group-hover:opacity-100" />
                   </div>
-                  <ArrowRight size={16} className="text-faint opacity-0 transition group-hover:opacity-100" />
-                </div>
-                <p className="mt-3 text-sm text-muted">{a.desc}</p>
-                <div className="mt-3 flex flex-wrap gap-1.5 font-mono text-[10px] uppercase tracking-wider text-faint">
-                  <span className="rounded border border-border px-2 py-0.5">{a.objects} object{a.objects > 1 ? "s" : ""}</span>
-                  <span className="rounded border border-border px-2 py-0.5">{a.automations} automation{a.automations > 1 ? "s" : ""}</span>
-                  <span className="rounded border border-border px-2 py-0.5">AI tools</span>
-                </div>
-              </div>
+                  <p className="mt-3 text-sm text-muted">{a.desc}</p>
+                  <div className="mt-3 flex flex-wrap gap-1.5 font-mono text-[10px] uppercase tracking-wider text-faint">
+                    <span className="rounded border border-border px-2 py-0.5">{a.objects} object{a.objects > 1 ? "s" : ""}</span>
+                    <span className="rounded border border-border px-2 py-0.5">{a.automations} automation{a.automations > 1 ? "s" : ""}</span>
+                    <span className="rounded border border-border px-2 py-0.5">AI tools</span>
+                  </div>
+                </SpotlightCard>
+              </StaggerItem>
             ))}
-          </div>
+          </Stagger>
         </div>
       </section>
 
@@ -413,24 +433,26 @@ $ open http://localhost:3000`}
               Every phase shipped as working, tested software. Here's where the structure stands.
             </p>
           </div>
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+          <Stagger className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
             {ROADMAP.map((r) => (
-              <div key={r.phase} className="rounded-xl border border-border bg-card p-5">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-[10px] uppercase tracking-wider text-muted">{r.phase}</span>
-                  {r.status === "done" ? (
-                    <span className="flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-semibold text-success">
-                      <Check size={11} /> shipped
-                    </span>
-                  ) : (
-                    <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted">next</span>
-                  )}
+              <StaggerItem key={r.phase}>
+                <div className="h-full rounded-xl border border-border bg-card p-5 transition hover:border-border-strong">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-[10px] uppercase tracking-wider text-muted">{r.phase}</span>
+                    {r.status === "done" ? (
+                      <span className="flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-semibold text-success">
+                        <Check size={11} /> shipped
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted">next</span>
+                    )}
+                  </div>
+                  <div className="mt-2 font-semibold">{r.title}</div>
+                  <p className="mt-1 text-sm text-muted">{r.body}</p>
                 </div>
-                <div className="mt-2 font-semibold">{r.title}</div>
-                <p className="mt-1 text-sm text-muted">{r.body}</p>
-              </div>
+              </StaggerItem>
             ))}
-          </div>
+          </Stagger>
         </div>
       </section>
 
@@ -464,7 +486,9 @@ $ open http://localhost:3000`}
             Create a workspace in ten seconds. The kernel is already running.
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-            <DashboardButton />
+            <ShimmerButton onClick={() => (window.location.href = "/dashboard")}>
+              Open Dashboard <ArrowRight size={15} />
+            </ShimmerButton>
             <DashboardButton primary={false} label="Create a workspace" />
           </div>
           <div className="mt-6 flex items-center justify-center gap-4 text-xs text-muted">

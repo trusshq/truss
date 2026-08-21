@@ -183,6 +183,17 @@ body {
   animation-play-state: paused;
 }
 
+/* meteors: diagonal falling streaks */
+@keyframes meteor-fall {
+  0% { transform: rotate(215deg) translateX(0); opacity: 0; }
+  10% { opacity: 1; }
+  100% { transform: rotate(215deg) translateX(120vh); opacity: 0; }
+}
+.meteor {
+  animation: meteor-fall var(--duration, 4s) linear infinite;
+  animation-delay: var(--delay, 0s);
+}
+
 /* respect users who prefer less motion */
 @media (prefers-reduced-motion: reduce) {
   .truss-member, .truss-node, .animate-rise {
@@ -191,4 +202,5 @@ body {
   }
   .marquee-track { animation: none; }
   .load-path { animation: none; opacity: 1; }
+  .meteor { animation: none; opacity: 0; }
 }
