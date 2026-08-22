@@ -56,12 +56,36 @@ jobs:
           .venv/bin/python -c "import truss_kernel.main; print('import OK')"
 
       - name: Run all smoke suites
-        # The runner spawns the kernel itself (TRUSS_TEST_SPAWN_KERNEL=1) so it
-        # stays alive for the whole run — a backgrounded `nohup` from a prior
-        # step gets torn down by the Actions process-group between steps.
-        env:
-          TRUSS_TEST_SPAWN_KERNEL: "1"
-        run: .venv/bin/python run_all_tests.py
+        # Start uvicorn as a REAL background process in THIS step (so it isn't
+        # torn down between steps) with its genuine stdout/stderr in kernel.log.
+        # Then run the suites against it. Everything on 127.0.0.1, same host.
+        run: |
+          set +e
+          .venv/bin/uvicorn truss_kernel.main:app --host 127.0.0.1 --port 8000 > kernel.log 2>&1 &
+          KERNEL_PID=$!
+          echo "kernel started (pid $KERNEL_PID)"
+
+          healthy=0
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/api/health > /dev/null 2>&1; then
+              healthy=1
+              echo "kernel healthy after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$healthy" != "1" ]; then
+            echo "::error::kernel did not become healthy in 60s"
+            echo "--- kernel.log (last 80 lines) ---"
+            tail -n 80 kernel.log
+            exit 1
+          fi
+
+          .venv/bin/python run_all_tests.py
+          RC=$?
+          kill $KERNEL_PID 2>/dev/null
+          exit $RC
 
       - name: Kernel logs (on failure)
         if: failure()
