@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from truss_kernel.agents import orchestration as orchestration_engine
 from truss_kernel.automations.engine import engine as automation_engine
 from truss_kernel.config import settings
 from truss_kernel.connectors import webhook as webhook_adapter
@@ -13,7 +14,7 @@ from truss_kernel.events import bus
 from truss_kernel.migrate import run_migrations
 from truss_kernel.models.base import Base
 from truss_kernel.plugins.registry import registry
-from truss_kernel.routes import agents, ai, apikeys, auth, automations, connectors, events, marketplace, objects, org, plugins, records, workspace
+from truss_kernel.routes import agents, ai, apikeys, auth, automations, connectors, events, marketplace, objects, orchestration, org, plugins, records, workspace
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("truss")
@@ -28,9 +29,12 @@ async def lifespan(app: FastAPI):
     found = registry.discover()
     bus.subscribe("*", automation_engine.handle)
     bus.subscribe("*", webhook_adapter.on_event)
+    bus.subscribe("*", orchestration_engine.handle_trigger_event)
+    await orchestration_engine.scheduler.start()
     logger.info("Truss kernel up. %d plugin(s) discovered: %s",
                 len(found), ", ".join(sorted(found)))
     yield
+    await orchestration_engine.scheduler.stop()
     await engine.dispose()
 
 
@@ -58,6 +62,7 @@ app.include_router(events.router)
 app.include_router(ai.router)
 app.include_router(apikeys.router)
 app.include_router(org.router)
+app.include_router(orchestration.router)
 app.include_router(agents.router)
 app.include_router(automations.router)
 app.include_router(connectors.router)

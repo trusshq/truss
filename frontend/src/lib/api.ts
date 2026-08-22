@@ -363,6 +363,78 @@ export interface TaskCommentInfo {
   created_at: string | null;
 }
 
+/* ---------- Phase C: autonomous orchestration ---------- */
+
+export interface ScheduleInfo {
+  id: string;
+  agent_id: string;
+  name: string;
+  title: string;
+  prompt: string;
+  kind: "interval" | "cron";
+  every_minutes: number;
+  cron: string;
+  enabled: boolean;
+  needs_review: boolean;
+  last_run_at: string;
+  next_run_at: string;
+  runs_count: number;
+  last_status: string;
+  last_error: string;
+  created_at: string | null;
+}
+
+export interface TriggerInfo {
+  id: string;
+  agent_id: string;
+  name: string;
+  event_type: string;
+  object_slug: string;
+  title: string;
+  prompt: string;
+  enabled: boolean;
+  needs_review: boolean;
+  cooldown_seconds: number;
+  last_fired_at: string;
+  fires_count: number;
+  created_at: string | null;
+}
+
+export interface PipelineStepInfo {
+  agent_id: string;
+  title: string;
+  prompt: string;
+}
+
+export interface PipelineInfo {
+  id: string;
+  name: string;
+  description: string;
+  status: "active" | "paused";
+  steps: PipelineStepInfo[];
+  runs_count: number;
+  last_run_at: string;
+  last_status: string;
+  created_at: string | null;
+}
+
+export interface PipelineRunStep {
+  step: number;
+  agent_id: string;
+  agent: string;
+  task_id: string;
+  ok: boolean;
+  reply: string;
+  error: string;
+}
+
+export interface PipelineRunResult {
+  ok: boolean;
+  steps: PipelineRunStep[];
+  final_reply?: string;
+  error?: string;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;

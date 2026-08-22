@@ -60,9 +60,13 @@ import {
   type HistoryEntry,
   type NotificationInfo,
   type OrgNode,
+  type PipelineInfo,
+  type PipelineRunResult,
   type ReviewInbox,
+  type ScheduleInfo,
   type TaskCommentInfo,
   type TrashItem,
+  type TriggerInfo,
   type ChatResult,
   type Invite,
   type MarketplacePlugin,
@@ -89,6 +93,7 @@ type View =
   | { kind: "org" }
   | { kind: "goals" }
   | { kind: "review" }
+  | { kind: "autopilot" }
   | { kind: "automations" }
   | { kind: "connectors" }
   | { kind: "settings" }
@@ -344,6 +349,7 @@ function SidebarContent({
           <NavItem active={view.kind === "org"} onClick={() => go({ kind: "org" })} icon={<Network size={15} />} label="Org Chart" />
           <NavItem active={view.kind === "goals"} onClick={() => go({ kind: "goals" })} icon={<Target size={15} />} label="Goals" />
           <NavItem active={view.kind === "review"} onClick={() => go({ kind: "review" })} icon={<Inbox size={15} />} label="Review Inbox" />
+          <NavItem active={view.kind === "autopilot"} onClick={() => go({ kind: "autopilot" })} icon={<Zap size={15} />} label="Autopilot" />
           <NavItem active={view.kind === "automations"} onClick={() => go({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
           {me.role !== "viewer" && (
             <NavItem active={view.kind === "connectors"} onClick={() => go({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
@@ -619,6 +625,7 @@ export default function DashboardPage() {
             {view.kind === "org" && <OrgView onChanged={refresh} />}
             {view.kind === "goals" && <GoalsView onChanged={refresh} />}
             {view.kind === "review" && <ReviewView onChanged={refresh} />}
+            {view.kind === "autopilot" && <AutopilotView onChanged={refresh} />}
             {view.kind === "automations" && <AutomationsView />}
             {view.kind === "connectors" && <ConnectorsView />}
             {view.kind === "settings" && <SettingsView />}
@@ -3647,6 +3654,501 @@ function ReviewView({ onChanged }: { onChanged: () => Promise<void> }) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Phase C: Autopilot (schedules / triggers / pipelines) ---------------- */
+
+function AutopilotView({ onChanged }: { onChanged: () => Promise<void> }) {
+  const [tab, setTab] = useState<"schedules" | "triggers" | "pipelines">("schedules");
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [schedules, setSchedules] = useState<ScheduleInfo[]>([]);
+  const [triggers, setTriggers] = useState<TriggerInfo[]>([]);
+  const [pipelines, setPipelines] = useState<PipelineInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [runResult, setRunResult] = useState<PipelineRunResult | null>(null);
+
+  // schedule form
+  const [sForm, setSForm] = useState({ agent_id: "", name: "", title: "", prompt: "", kind: "interval", every_minutes: "60", cron: "", needs_review: false });
+  // trigger form
+  const [tForm, setTForm] = useState({ agent_id: "", name: "", event_type: "record.created", object_slug: "", title: "", prompt: "", needs_review: false });
+  // pipeline form
+  const [pForm, setPForm] = useState({ name: "", description: "", steps: [{ agent_id: "", title: "", prompt: "" }] });
+
+  const load = useCallback(async () => {
+    try {
+      const [a, s, t, p] = await Promise.all([
+        api<AgentInfo[]>("/api/agents"),
+        api<ScheduleInfo[]>("/api/orchestration/schedules"),
+        api<TriggerInfo[]>("/api/orchestration/triggers"),
+        api<PipelineInfo[]>("/api/orchestration/pipelines"),
+      ]);
+      setAgents(a);
+      setSchedules(s);
+      setTriggers(t);
+      setPipelines(p);
+    } catch {
+      /* boot race */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const agentName = (id: string) => agents.find((a) => a.id === id)?.name ?? id.slice(0, 8);
+  const agentIcon = (id: string) => agents.find((a) => a.id === id)?.icon ?? "🤖";
+  const input = "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition focus:border-accent";
+
+  async function createSchedule(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api("/api/orchestration/schedules", {
+        method: "POST",
+        body: {
+          agent_id: sForm.agent_id, name: sForm.name, title: sForm.title, prompt: sForm.prompt,
+          kind: sForm.kind, every_minutes: parseInt(sForm.every_minutes) || 60,
+          cron: sForm.cron, needs_review: sForm.needs_review,
+        },
+      });
+      toast("Schedule created", "success");
+      setShowForm(false);
+      setSForm({ agent_id: "", name: "", title: "", prompt: "", kind: "interval", every_minutes: "60", cron: "", needs_review: false });
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createTrigger(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api("/api/orchestration/triggers", {
+        method: "POST",
+        body: {
+          agent_id: tForm.agent_id, name: tForm.name, event_type: tForm.event_type,
+          object_slug: tForm.object_slug, title: tForm.title, prompt: tForm.prompt,
+          needs_review: tForm.needs_review,
+        },
+      });
+      toast("Trigger created", "success");
+      setShowForm(false);
+      setTForm({ agent_id: "", name: "", event_type: "record.created", object_slug: "", title: "", prompt: "", needs_review: false });
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createPipeline(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api("/api/orchestration/pipelines", {
+        method: "POST",
+        body: {
+          name: pForm.name, description: pForm.description,
+          steps: pForm.steps.filter((s) => s.agent_id),
+        },
+      });
+      toast("Pipeline created", "success");
+      setShowForm(false);
+      setPForm({ name: "", description: "", steps: [{ agent_id: "", title: "", prompt: "" }] });
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleSchedule(s: ScheduleInfo) {
+    try {
+      await api(`/api/orchestration/schedules/${s.id}`, { method: "PATCH", body: { enabled: !s.enabled } });
+      await load();
+    } catch {
+      toast("Update failed", "error");
+    }
+  }
+
+  async function toggleTrigger(t: TriggerInfo) {
+    try {
+      await api(`/api/orchestration/triggers/${t.id}`, { method: "PATCH", body: { enabled: !t.enabled } });
+      await load();
+    } catch {
+      toast("Update failed", "error");
+    }
+  }
+
+  async function runPipeline(p: PipelineInfo) {
+    setBusy(true);
+    setRunResult(null);
+    try {
+      const res = await api<{ run: PipelineRunResult }>(`/api/orchestration/pipelines/${p.id}/run`, {
+        method: "POST",
+        body: { input: "" },
+      });
+      setRunResult(res.run);
+      toast(res.run.ok ? "Pipeline completed" : "Pipeline failed", res.run.ok ? "success" : "error");
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Run failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(kind: "schedules" | "triggers" | "pipelines", id: string) {
+    try {
+      await api(`/api/orchestration/${kind}/${id}`, { method: "DELETE" });
+      toast("Deleted", "info");
+      await load();
+      await onChanged();
+    } catch {
+      toast("Delete failed", "error");
+    }
+  }
+
+  const tabs = [
+    { id: "schedules" as const, label: "Schedules", count: schedules.length },
+    { id: "triggers" as const, label: "Triggers", count: triggers.length },
+    { id: "pipelines" as const, label: "Pipelines", count: pipelines.length },
+  ];
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold">Autopilot</h1>
+          <p className="mt-0.5 text-xs text-muted">
+            Your AI employees working on their own — on a schedule, reacting to events, or in pipelines.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowForm((v) => !v)}
+          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
+        >
+          {showForm ? "Cancel" : "+ New " + tab.slice(0, -1)}
+        </button>
+      </div>
+
+      {/* tabs */}
+      <div className="mt-4 flex gap-1 rounded-lg border border-border bg-card p-1">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => { setTab(t.id); setShowForm(false); setRunResult(null); }}
+            className={`flex-1 rounded-md px-3 py-1.5 text-sm transition ${tab === t.id ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}
+          >
+            {t.label} <span className="opacity-60">({t.count})</span>
+          </button>
+        ))}
+      </div>
+
+      {/* forms */}
+      {showForm && tab === "schedules" && (
+        <form onSubmit={createSchedule} className="mt-4 grid gap-3 rounded-xl border border-border bg-card p-4 md:grid-cols-2">
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Agent *</span>
+            <select className={input} value={sForm.agent_id} onChange={(e) => setSForm({ ...sForm, agent_id: e.target.value })} required>
+              <option value="">— pick an agent —</option>
+              {agents.filter((a) => a.status !== "terminated").map((a) => (
+                <option key={a.id} value={a.id}>{a.icon} {a.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Name *</span>
+            <input className={input} value={sForm.name} onChange={(e) => setSForm({ ...sForm, name: e.target.value })} required />
+          </label>
+          <label className="block text-xs md:col-span-2">
+            <span className="mb-1 block text-muted">Task title *</span>
+            <input className={input} value={sForm.title} onChange={(e) => setSForm({ ...sForm, title: e.target.value })} required />
+          </label>
+          <label className="block text-xs md:col-span-2">
+            <span className="mb-1 block text-muted">Prompt</span>
+            <textarea className={input} rows={2} value={sForm.prompt} onChange={(e) => setSForm({ ...sForm, prompt: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Kind</span>
+            <select className={input} value={sForm.kind} onChange={(e) => setSForm({ ...sForm, kind: e.target.value })}>
+              <option value="interval">Every N minutes</option>
+              <option value="cron">Cron expression</option>
+            </select>
+          </label>
+          {sForm.kind === "interval" ? (
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Every (minutes)</span>
+              <input className={input} type="number" min="1" value={sForm.every_minutes} onChange={(e) => setSForm({ ...sForm, every_minutes: e.target.value })} />
+            </label>
+          ) : (
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Cron (min hour dom month dow)</span>
+              <input className={input} placeholder="0 9 * * *" value={sForm.cron} onChange={(e) => setSForm({ ...sForm, cron: e.target.value })} />
+            </label>
+          )}
+          <label className="flex items-center gap-2 text-xs md:col-span-2">
+            <input type="checkbox" checked={sForm.needs_review} onChange={(e) => setSForm({ ...sForm, needs_review: e.target.checked })} />
+            Require human approval before each run
+          </label>
+          <div className="md:col-span-2">
+            <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy ? "…" : "Create schedule"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {showForm && tab === "triggers" && (
+        <form onSubmit={createTrigger} className="mt-4 grid gap-3 rounded-xl border border-border bg-card p-4 md:grid-cols-2">
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Agent *</span>
+            <select className={input} value={tForm.agent_id} onChange={(e) => setTForm({ ...tForm, agent_id: e.target.value })} required>
+              <option value="">— pick an agent —</option>
+              {agents.filter((a) => a.status !== "terminated").map((a) => (
+                <option key={a.id} value={a.id}>{a.icon} {a.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Name *</span>
+            <input className={input} value={tForm.name} onChange={(e) => setTForm({ ...tForm, name: e.target.value })} required />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Event type *</span>
+            <select className={input} value={tForm.event_type} onChange={(e) => setTForm({ ...tForm, event_type: e.target.value })}>
+              <option value="record.created">record.created</option>
+              <option value="record.updated">record.updated</option>
+              <option value="record.deleted">record.deleted</option>
+            </select>
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Object filter (optional)</span>
+            <input className={input} placeholder="lead" value={tForm.object_slug} onChange={(e) => setTForm({ ...tForm, object_slug: e.target.value })} />
+          </label>
+          <label className="block text-xs md:col-span-2">
+            <span className="mb-1 block text-muted">Task title * <span className="text-faint">(placeholders: {"{event} {object} {record_id}"})</span></span>
+            <input className={input} value={tForm.title} onChange={(e) => setTForm({ ...tForm, title: e.target.value })} required />
+          </label>
+          <label className="block text-xs md:col-span-2">
+            <span className="mb-1 block text-muted">Prompt</span>
+            <textarea className={input} rows={2} value={tForm.prompt} onChange={(e) => setTForm({ ...tForm, prompt: e.target.value })} />
+          </label>
+          <label className="flex items-center gap-2 text-xs md:col-span-2">
+            <input type="checkbox" checked={tForm.needs_review} onChange={(e) => setTForm({ ...tForm, needs_review: e.target.checked })} />
+            Require human approval before each run
+          </label>
+          <div className="md:col-span-2">
+            <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy ? "…" : "Create trigger"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {showForm && tab === "pipelines" && (
+        <form onSubmit={createPipeline} className="mt-4 space-y-3 rounded-xl border border-border bg-card p-4">
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Name *</span>
+              <input className={input} value={pForm.name} onChange={(e) => setPForm({ ...pForm, name: e.target.value })} required />
+            </label>
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Description</span>
+              <input className={input} value={pForm.description} onChange={(e) => setPForm({ ...pForm, description: e.target.value })} />
+            </label>
+          </div>
+          {pForm.steps.map((step, i) => (
+            <div key={i} className="grid gap-2 rounded-lg border border-border bg-background p-3 md:grid-cols-3">
+              <label className="block text-xs">
+                <span className="mb-1 block text-muted">Step {i + 1} agent *</span>
+                <select className={input} value={step.agent_id} onChange={(e) => {
+                  const steps = [...pForm.steps];
+                  steps[i] = { ...steps[i], agent_id: e.target.value };
+                  setPForm({ ...pForm, steps });
+                }} required>
+                  <option value="">— pick —</option>
+                  {agents.filter((a) => a.status !== "terminated").map((a) => (
+                    <option key={a.id} value={a.id}>{a.icon} {a.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-xs">
+                <span className="mb-1 block text-muted">Step title</span>
+                <input className={input} value={step.title} onChange={(e) => {
+                  const steps = [...pForm.steps];
+                  steps[i] = { ...steps[i], title: e.target.value };
+                  setPForm({ ...pForm, steps });
+                }} />
+              </label>
+              <label className="block text-xs">
+                <span className="mb-1 block text-muted">Step prompt</span>
+                <input className={input} value={step.prompt} onChange={(e) => {
+                  const steps = [...pForm.steps];
+                  steps[i] = { ...steps[i], prompt: e.target.value };
+                  setPForm({ ...pForm, steps });
+                }} />
+              </label>
+            </div>
+          ))}
+          <div className="flex gap-2">
+            <button type="button" onClick={() => setPForm({ ...pForm, steps: [...pForm.steps, { agent_id: "", title: "", prompt: "" }] })} className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground">
+              + Add step
+            </button>
+            {pForm.steps.length > 1 && (
+              <button type="button" onClick={() => setPForm({ ...pForm, steps: pForm.steps.slice(0, -1) })} className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted hover:text-foreground">
+                − Remove last
+              </button>
+            )}
+          </div>
+          <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+            {busy ? "…" : "Create pipeline"}
+          </button>
+        </form>
+      )}
+
+      {/* lists */}
+      {loading ? (
+        <div className="mt-6 space-y-2">{[0, 1].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="mt-6 space-y-2">
+          {tab === "schedules" && (schedules.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border p-8 text-center">
+              <Zap size={24} className="mx-auto text-faint" />
+              <p className="mt-2 text-sm text-muted">No schedules yet — set an agent to run on a timer or cron.</p>
+            </div>
+          ) : schedules.map((s) => (
+            <div key={s.id} className="flex items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">{agentIcon(s.agent_id)}</span>
+                  <span className="truncate text-sm font-semibold">{s.name}</span>
+                  <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${s.enabled ? "bg-success/15 text-success" : "bg-border text-muted"}`}>
+                    {s.enabled ? "on" : "off"}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted">
+                  {agentName(s.agent_id)} · {s.kind === "cron" ? `cron: ${s.cron}` : `every ${s.every_minutes}m`} · {s.runs_count} runs
+                  {s.last_status && <span> · last: {s.last_status}</span>}
+                  {s.next_run_at && <span> · next: {new Date(s.next_run_at).toLocaleString()}</span>}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button onClick={() => toggleSchedule(s)} className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted hover:text-foreground">
+                  {s.enabled ? "Pause" : "Enable"}
+                </button>
+                <button onClick={() => remove("schedules", s.id)} className="rounded-lg border border-border px-2.5 py-1 text-xs text-danger hover:bg-danger/10">
+                  Delete
+                </button>
+              </div>
+            </div>
+          )))}
+
+          {tab === "triggers" && (triggers.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border p-8 text-center">
+              <Zap size={24} className="mx-auto text-faint" />
+              <p className="mt-2 text-sm text-muted">No triggers yet — make an agent react when records change.</p>
+            </div>
+          ) : triggers.map((t) => (
+            <div key={t.id} className="flex items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">{agentIcon(t.agent_id)}</span>
+                  <span className="truncate text-sm font-semibold">{t.name}</span>
+                  <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${t.enabled ? "bg-success/15 text-success" : "bg-border text-muted"}`}>
+                    {t.enabled ? "on" : "off"}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[11px] text-muted">
+                  {agentName(t.agent_id)} · on <span className="font-mono text-accent">{t.event_type}</span>
+                  {t.object_slug && <span> ({t.object_slug})</span>} · fired {t.fires_count}×
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button onClick={() => toggleTrigger(t)} className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted hover:text-foreground">
+                  {t.enabled ? "Pause" : "Enable"}
+                </button>
+                <button onClick={() => remove("triggers", t.id)} className="rounded-lg border border-border px-2.5 py-1 text-xs text-danger hover:bg-danger/10">
+                  Delete
+                </button>
+              </div>
+            </div>
+          )))}
+
+          {tab === "pipelines" && (pipelines.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border p-8 text-center">
+              <Zap size={24} className="mx-auto text-faint" />
+              <p className="mt-2 text-sm text-muted">No pipelines yet — chain agents so one&apos;s output feeds the next.</p>
+            </div>
+          ) : pipelines.map((p) => (
+            <div key={p.id} className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold">{p.name}</span>
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${p.status === "active" ? "bg-success/15 text-success" : "bg-border text-muted"}`}>
+                      {p.status}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted">
+                    {p.steps.length} steps · {p.runs_count} runs
+                    {p.last_status && <span> · last: {p.last_status}</span>}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                    {p.steps.map((st, i) => (
+                      <span key={i} className="flex items-center gap-1 rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">
+                        {i > 0 && <span className="text-faint">→</span>}
+                        {agentIcon(st.agent_id)} {agentName(st.agent_id)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button disabled={busy || p.status !== "active"} onClick={() => runPipeline(p)} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                    Run
+                  </button>
+                  <button onClick={() => remove("pipelines", p.id)} className="rounded-lg border border-border px-2.5 py-1 text-xs text-danger hover:bg-danger/10">
+                    Delete
+                  </button>
+                </div>
+              </div>
+              {runResult && (
+                <div className="mt-3 space-y-1.5 border-t border-border pt-3">
+                  {runResult.steps.map((st) => (
+                    <div key={st.step} className="rounded-lg bg-background px-3 py-2 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className={st.ok ? "text-success" : "text-danger"}>{st.ok ? "✓" : "✗"}</span>
+                        <span className="font-medium">{st.agent}</span>
+                      </div>
+                      {st.reply && <div className="mt-1 line-clamp-2 text-muted">{st.reply}</div>}
+                      {st.error && <div className="mt-1 text-danger">{st.error}</div>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )))}
         </div>
       )}
     </div>

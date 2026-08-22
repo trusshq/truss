@@ -6,6 +6,13 @@ from truss_kernel.models.base import Base
 from truss_kernel.models.connector import Connector, WebhookDelivery
 from truss_kernel.models.metadata import FieldDef, FieldType, ObjectDef, Record, RecordHistory
 from truss_kernel.models.org import Goal, GoalStatus, Notification, TaskComment
+from truss_kernel.models.orchestration import (
+    AgentPipeline,
+    AgentSchedule,
+    AgentTrigger,
+    PipelineStatus,
+    ScheduleKind,
+)
 from truss_kernel.models.plugin import EventLog, PluginInstall
 from truss_kernel.models.tenant import Membership, Tenant, TenantRole, User
 
@@ -33,6 +40,11 @@ __all__ = [
     "GoalStatus",
     "Notification",
     "TaskComment",
+    "AgentSchedule",
+    "ScheduleKind",
+    "AgentTrigger",
+    "AgentPipeline",
+    "PipelineStatus",
     "PluginInstall",
     "EventLog",
 ]
