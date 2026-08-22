@@ -95,7 +95,7 @@ export interface PluginInfo {
   objects: { slug: string; name: string }[];
   tools: { slug: string; name: string; description: string }[];
   automations: { slug: string; name: string }[];
-  ui: { slug: string; label: string; icon: string; view: string; object?: string }[];
+  ui: { slug: string; label: string; icon: string; view: string; object?: string; config?: { group_by?: string } }[];
   installed: boolean;
   enabled: boolean;
   settings: Record<string, unknown>;
@@ -152,4 +152,29 @@ export interface ChatResult {
   trace: ChatTraceItem[];
   steps: number;
   model: string;
+}
+
+export interface MarketplacePlugin {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  icon: string;
+  category: string;
+  downloads: number;
+  rating: number;
+  objects: string[];
+  permissions: string[];
+  installed: boolean;
+  enabled: boolean;
+}
+
+export interface MarketplaceTemplate {
+  id: string;
+  name: string;
+  icon: string;
+  description: string;
+  plugins: string[];
+  record_count: number;
 }

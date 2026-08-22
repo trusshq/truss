@@ -47,7 +47,9 @@ TOKEN = b.get("access_token")
 print("== 1. all 4 plugins discovered ==")
 s, cat = call("GET", "/api/plugins/catalog")
 ids = {p["id"] for p in cat} if isinstance(cat, list) else set()
-check("4 plugins in catalog", ids == {"truss-crm", "truss-invoices", "truss-tasks", "truss-helpdesk"}, str(ids))
+# subset check: marketplace-installed community plugins also appear in the
+# catalog (by design), so assert the 4 builtins are present, not an exact set
+check("4 builtin plugins in catalog", {"truss-crm", "truss-invoices", "truss-tasks", "truss-helpdesk"} <= ids, str(ids))
 
 print("== 2. install the three new apps ==")
 for pid in ["truss-invoices", "truss-tasks", "truss-helpdesk"]:

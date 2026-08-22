@@ -15,6 +15,7 @@ import {
   Plug,
   Puzzle,
   RotateCcw,
+  Store,
   Sun,
   Zap,
 } from "lucide-react";
@@ -24,6 +25,8 @@ import {
   setToken,
   type AiKeyInfo,
   type ChatResult,
+  type MarketplacePlugin,
+  type MarketplaceTemplate,
   type Me,
   type ObjectDef,
   type PluginInfo,
@@ -33,7 +36,9 @@ import { ACCENT_PRESETS, useTheme, type Density, type Radius, type ThemeMode } f
 
 type View =
   | { kind: "object"; slug: string }
+  | { kind: "kanban"; slug: string; object: string; groupBy: string }
   | { kind: "plugins" }
+  | { kind: "marketplace" }
   | { kind: "events" }
   | { kind: "ai" }
   | { kind: "automations" }
@@ -79,11 +84,11 @@ export default function DashboardPage() {
 
   // UI surfaces from enabled plugins
   const surfaces = useMemo(() => {
-    const out: { label: string; icon: string; object?: string; slug: string }[] = [];
+    const out: { label: string; icon: string; object?: string; slug: string; view: string; groupBy?: string }[] = [];
     for (const p of plugins.filter((p) => p.installed && p.enabled)) {
       for (const s of p.ui) {
-        if (s.view === "table" && s.object) {
-          out.push({ label: s.label, icon: s.icon, object: s.object, slug: s.slug });
+        if ((s.view === "table" || s.view === "kanban") && s.object) {
+          out.push({ label: s.label, icon: s.icon, object: s.object, slug: s.slug, view: s.view, groupBy: s.config?.group_by });
         }
       }
     }
@@ -130,9 +135,14 @@ export default function DashboardPage() {
           {surfaces.map((s) => (
             <button
               key={s.slug}
-              onClick={() => setView({ kind: "object", slug: s.object! })}
+              onClick={() =>
+                s.view === "kanban" && s.groupBy
+                  ? setView({ kind: "kanban", slug: s.slug, object: s.object!, groupBy: s.groupBy })
+                  : setView({ kind: "object", slug: s.object! })
+              }
               className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                view.kind === "object" && view.slug === s.object
+                (view.kind === "object" && view.slug === s.object && s.view === "table") ||
+                (view.kind === "kanban" && view.slug === s.slug)
                   ? "bg-accent-soft text-accent"
                   : "hover:bg-card"
               }`}
@@ -149,6 +159,14 @@ export default function DashboardPage() {
             }`}
           >
             <Puzzle size={15} /> Plugins
+          </button>
+          <button
+            onClick={() => setView({ kind: "marketplace" })}
+            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
+              view.kind === "marketplace" ? "bg-accent-soft text-accent" : "hover:bg-card"
+            }`}
+          >
+            <Store size={15} /> Marketplace
           </button>
           <button
             onClick={() => setView({ kind: "ai" })}
@@ -209,6 +227,7 @@ export default function DashboardPage() {
       {/* Main */}
       <section className="min-w-0 flex-1 overflow-y-auto p-6">
         {view.kind === "plugins" && <PluginsView plugins={plugins} onChanged={refresh} />}
+        {view.kind === "marketplace" && <MarketplaceView onChanged={refresh} />}
         {view.kind === "events" && <EventsView />}
         {view.kind === "ai" && <AiView onChanged={refresh} />}
         {view.kind === "automations" && <AutomationsView />}
@@ -217,6 +236,13 @@ export default function DashboardPage() {
         {view.kind === "object" && (
           <ObjectView
             object={objects.find((o) => o.slug === view.slug) ?? null}
+            onChanged={refresh}
+          />
+        )}
+        {view.kind === "kanban" && (
+          <KanbanView
+            object={objects.find((o) => o.slug === view.object) ?? null}
+            groupBy={view.groupBy}
             onChanged={refresh}
           />
         )}
@@ -330,6 +356,175 @@ function PluginsView({ plugins, onChanged }: { plugins: PluginInfo[]; onChanged:
   );
 }
 
+/* ---------------- Marketplace (community plugins + templates) ---------------- */
+
+function MarketplaceView({ onChanged }: { onChanged: () => Promise<void> }) {
+  const [plugins, setPlugins] = useState<MarketplacePlugin[]>([]);
+  const [templates, setTemplates] = useState<MarketplaceTemplate[]>([]);
+  const [tab, setTab] = useState<"plugins" | "templates">("plugins");
+  const [busy, setBusy] = useState("");
+  const [message, setMessage] = useState("");
+
+  const load = useCallback(async () => {
+    const [p, t] = await Promise.all([
+      api<{ items: MarketplacePlugin[] }>("/api/marketplace/plugins"),
+      api<{ items: MarketplaceTemplate[] }>("/api/marketplace/templates"),
+    ]);
+    setPlugins(p.items);
+    setTemplates(t.items);
+  }, []);
+
+  useEffect(() => {
+    load().catch(() => {});
+  }, [load]);
+
+  async function installPlugin(id: string) {
+    setBusy(id);
+    setMessage("");
+    try {
+      await api(`/api/marketplace/plugins/${id}/install`, { method: "POST" });
+      setMessage(`Installed ${id} — its objects and views are live now.`);
+      await load();
+      await onChanged();
+    } catch (e) {
+      setMessage(`Install failed: ${String((e as { detail?: unknown }).detail ?? e)}`);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function applyTemplate(id: string) {
+    setBusy(id);
+    setMessage("");
+    try {
+      const res = await api<{ plugins_installed: string[]; records_seeded: number }>(
+        `/api/marketplace/templates/${id}/apply`,
+        { method: "POST", body: { seed: true } }
+      );
+      setMessage(`Template applied: ${res.plugins_installed.length} plugin(s), ${res.records_seeded} sample records.`);
+      await load();
+      await onChanged();
+    } catch (e) {
+      setMessage(`Apply failed: ${String((e as { detail?: unknown }).detail ?? e)}`);
+    } finally {
+      setBusy("");
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold">🛍️ Marketplace</h1>
+          <p className="mt-0.5 text-sm text-muted">
+            Community plugins and starter templates — install in one click, no code.
+          </p>
+        </div>
+        <div className="flex rounded-lg border border-border bg-card p-0.5">
+          {(["plugins", "templates"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`rounded-md px-3 py-1 text-sm font-medium capitalize transition ${
+                tab === t ? "bg-accent text-on-accent" : "text-muted hover:text-foreground"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {message && (
+        <div className="mt-3 rounded-lg border border-border bg-card px-3 py-2 text-sm">{message}</div>
+      )}
+
+      {tab === "plugins" && (
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {plugins.map((p) => (
+            <div key={p.id} className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">{p.icon}</span>
+                  <div>
+                    <div className="font-semibold">{p.name}</div>
+                    <div className="text-xs text-muted">
+                      by {p.author} · v{p.version} · {p.category}
+                    </div>
+                  </div>
+                </div>
+                <div className="text-right text-xs text-muted">
+                  <div>⭐ {p.rating}</div>
+                  <div>{p.downloads.toLocaleString()} installs</div>
+                </div>
+              </div>
+              <p className="mt-2 text-sm text-muted">{p.description}</p>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {p.objects.map((o) => (
+                  <span key={o} className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs text-accent">
+                    {o}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-3 flex items-center justify-between">
+                <span className="text-[11px] text-muted">{p.permissions.join(" · ")}</span>
+                {p.installed ? (
+                  <span className="flex items-center gap-1 text-xs font-semibold text-success">
+                    <Check size={13} /> Installed
+                  </span>
+                ) : (
+                  <button
+                    disabled={busy !== ""}
+                    onClick={() => installPlugin(p.id)}
+                    className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50"
+                  >
+                    {busy === p.id ? "Installing…" : "Install"}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tab === "templates" && (
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {templates.map((t) => (
+            <div key={t.id} className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">{t.icon}</span>
+                <div>
+                  <div className="font-semibold">{t.name}</div>
+                  <div className="text-xs text-muted">
+                    {t.plugins.length} plugin(s) · {t.record_count} sample records
+                  </div>
+                </div>
+              </div>
+              <p className="mt-2 text-sm text-muted">{t.description}</p>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {t.plugins.map((pid) => (
+                  <span key={pid} className="rounded-md bg-background px-1.5 py-0.5 font-mono text-xs text-muted">
+                    {pid}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-3 text-right">
+                <button
+                  disabled={busy !== ""}
+                  onClick={() => applyTemplate(t.id)}
+                  className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50"
+                >
+                  {busy === t.id ? "Applying…" : "Use this template"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- Object (generic table + create form) ---------------- */
 
 function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged: () => Promise<void> }) {
@@ -337,6 +532,7 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<RecordRow | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -369,8 +565,13 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
         if (v === undefined || v === "") continue;
         data[f.slug] = f.type === "number" || f.type === "currency" ? Number(v) : v;
       }
-      await api(`/api/records/${object.slug}`, { method: "POST", body: { data } });
+      if (editing) {
+        await api(`/api/records/${object.slug}/${editing.id}`, { method: "PATCH", body: { data } });
+      } else {
+        await api(`/api/records/${object.slug}`, { method: "POST", body: { data } });
+      }
       setShowForm(false);
+      setEditing(null);
       setForm({});
       await load();
       await onChanged();
@@ -380,6 +581,20 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
     } finally {
       setBusy(false);
     }
+  }
+
+  function startEdit(r: RecordRow) {
+    const f: Record<string, string> = {};
+    if (object) {
+      for (const field of object.fields) {
+        const v = r.data[field.slug];
+        if (v !== null && v !== undefined) f[field.slug] = String(v);
+      }
+    }
+    setForm(f);
+    setEditing(r);
+    setShowForm(true);
+    setError("");
   }
 
   async function remove(id: string) {
@@ -411,7 +626,15 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
             onChange={(e) => setSearch(e.target.value)}
           />
           <button
-            onClick={() => setShowForm((v) => !v)}
+            onClick={() => {
+              if (showForm) {
+                setShowForm(false);
+                setEditing(null);
+                setForm({});
+              } else {
+                setShowForm(true);
+              }
+            }}
             className="rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
           >
             {showForm ? "Close" : `+ New ${object.name}`}
@@ -421,6 +644,11 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
 
       {showForm && (
         <form onSubmit={create} className="mt-4 grid gap-3 rounded-xl border border-border bg-card p-4 md:grid-cols-2">
+          {editing && (
+            <div className="text-xs text-muted md:col-span-2">
+              Editing record <span className="font-mono">{editing.id.slice(0, 8)}…</span>
+            </div>
+          )}
           {object.fields.map((f) => (
             <label key={f.slug} className="block text-xs">
               <span className="mb-1 block text-muted">
@@ -460,7 +688,7 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
           {error && <div className="text-xs text-danger md:col-span-2">{error}</div>}
           <div className="md:col-span-2">
             <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
-              {busy ? "…" : "Create"}
+              {busy ? "…" : editing ? "Save changes" : "Create"}
             </button>
           </div>
         </form>
@@ -485,6 +713,9 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
                   </td>
                 ))}
                 <td className="px-3 py-2 text-right">
+                  <button onClick={() => startEdit(r)} className="mr-3 text-xs text-muted hover:text-accent">
+                    edit
+                  </button>
                   <button onClick={() => remove(r.id)} className="text-xs text-muted hover:text-danger">
                     delete
                   </button>
@@ -511,6 +742,134 @@ function renderCell(v: unknown, type: string) {
   if (type === "select")
     return <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs text-accent">{String(v)}</span>;
   return String(v);
+}
+
+/* ---------------- Kanban board (grouped by a select field, drag to move) ---------------- */
+
+function KanbanView({
+  object,
+  groupBy,
+  onChanged,
+}: {
+  object: ObjectDef | null;
+  groupBy: string;
+  onChanged: () => Promise<void>;
+}) {
+  const [rows, setRows] = useState<RecordRow[]>([]);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overCol, setOverCol] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const groupField = object?.fields.find((f) => f.slug === groupBy);
+  const columns = groupField?.options.choices ?? [];
+
+  const load = useCallback(async () => {
+    if (!object) return;
+    const res = await api<{ items: RecordRow[]; total: number }>(`/api/records/${object.slug}`);
+    setRows(res.items);
+  }, [object]);
+
+  useEffect(() => {
+    load().catch(() => {});
+  }, [load]);
+
+  if (!object) return <div className="text-muted">Object not found.</div>;
+  if (!groupField) return <div className="text-muted">No grouping field "{groupBy}".</div>;
+
+  // title field = first text-ish field for the card label
+  const titleField =
+    object.fields.find((f) => f.type === "text" && f.slug !== groupBy) ?? object.fields[0];
+  const subField = object.fields.find((f) => f.type === "currency") ?? null;
+
+  async function moveTo(recordId: string, value: string) {
+    if (!object) return;
+    setBusy(true);
+    try {
+      await api(`/api/records/${object.slug}/${recordId}`, {
+        method: "PATCH",
+        body: { data: { [groupBy]: value } },
+      });
+      await load();
+      await onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold">
+            {object.icon} {object.name_plural} · Board
+          </h1>
+          <p className="mt-0.5 text-sm text-muted">
+            Grouped by {groupField.name} · drag cards to move · {rows.length} total
+          </p>
+        </div>
+        {busy && <span className="text-xs text-muted">saving…</span>}
+      </div>
+
+      <div className="mt-4 flex gap-3 overflow-x-auto pb-4">
+        {columns.map((col) => {
+          const cards = rows.filter((r) => String(r.data[groupBy] ?? "") === col);
+          return (
+            <div
+              key={col}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setOverCol(col);
+              }}
+              onDragLeave={() => setOverCol((c) => (c === col ? null : c))}
+              onDrop={(e) => {
+                e.preventDefault();
+                setOverCol(null);
+                if (dragId) moveTo(dragId, col);
+                setDragId(null);
+              }}
+              className={`flex w-64 shrink-0 flex-col rounded-xl border bg-card/40 transition ${
+                overCol === col ? "border-accent bg-accent-soft/40" : "border-border"
+              }`}
+            >
+              <div className="flex items-center justify-between border-b border-border px-3 py-2">
+                <span className="text-sm font-semibold">{col}</span>
+                <span className="rounded-md bg-background px-1.5 py-0.5 text-xs text-muted">
+                  {cards.length}
+                </span>
+              </div>
+              <div className="flex min-h-[80px] flex-1 flex-col gap-2 p-2">
+                {cards.map((r) => (
+                  <div
+                    key={r.id}
+                    draggable
+                    onDragStart={() => setDragId(r.id)}
+                    onDragEnd={() => setDragId(null)}
+                    className={`cursor-grab rounded-lg border border-border bg-card p-3 shadow-sm transition hover:border-border-strong active:cursor-grabbing ${
+                      dragId === r.id ? "opacity-50" : ""
+                    }`}
+                  >
+                    <div className="text-sm font-medium">
+                      {String(r.data[titleField.slug] ?? "—")}
+                    </div>
+                    {subField && r.data[subField.slug] != null && (
+                      <div className="mt-1 font-mono text-xs text-muted">
+                        ${Number(r.data[subField.slug]).toLocaleString()}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {cards.length === 0 && (
+                  <div className="rounded-lg border border-dashed border-border px-2 py-4 text-center text-xs text-muted">
+                    Drop here
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 /* ---------------- AI (BYOK keys + agent chat) ---------------- */

@@ -1,0 +1,205 @@
+{
+  "id": "community-inventory",
+  "name": "Inventory",
+  "version": "0.3.1",
+  "description": "Products, stock levels, and reorder tracking for small warehouses and e-commerce ops.",
+  "author": "mika.dev",
+  "icon": "\ud83d\udce6",
+  "permissions": [
+    "objects:write",
+    "records:write",
+    "events:emit"
+  ],
+  "objects": [
+    {
+      "slug": "product",
+      "name": "Product",
+      "name_plural": "Products",
+      "description": "Items you stock and sell",
+      "icon": "\ud83d\udce6",
+      "fields": [
+        {
+          "slug": "sku",
+          "name": "SKU",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "slug": "name",
+          "name": "Name",
+          "type": "text",
+          "required": true,
+          "position": 1
+        },
+        {
+          "slug": "stock",
+          "name": "Stock",
+          "type": "number",
+          "position": 2
+        },
+        {
+          "slug": "reorder_point",
+          "name": "Reorder Point",
+          "type": "number",
+          "position": 3
+        },
+        {
+          "slug": "unit_cost",
+          "name": "Unit Cost",
+          "type": "currency",
+          "position": 4
+        },
+        {
+          "slug": "status",
+          "name": "Status",
+          "type": "select",
+          "position": 5,
+          "options": {
+            "choices": [
+              "Active",
+              "Low Stock",
+              "Out of Stock",
+              "Discontinued"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "slug": "stock_movement",
+      "name": "Stock Movement",
+      "name_plural": "Stock Movements",
+      "description": "Inbound and outbound stock events",
+      "icon": "\ud83d\udd01",
+      "fields": [
+        {
+          "slug": "product_sku",
+          "name": "Product SKU",
+          "type": "text",
+          "required": true,
+          "position": 0
+        },
+        {
+          "slug": "direction",
+          "name": "Direction",
+          "type": "select",
+          "required": true,
+          "position": 1,
+          "options": {
+            "choices": [
+              "In",
+              "Out",
+              "Adjustment"
+            ]
+          }
+        },
+        {
+          "slug": "quantity",
+          "name": "Quantity",
+          "type": "number",
+          "required": true,
+          "position": 2
+        },
+        {
+          "slug": "reason",
+          "name": "Reason",
+          "type": "text",
+          "position": 3
+        },
+        {
+          "slug": "movement_date",
+          "name": "Date",
+          "type": "date",
+          "position": 4
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "slug": "create_product",
+      "name": "Create Product",
+      "description": "Add a product to inventory",
+      "action": "create_record",
+      "object": "product",
+      "params": [
+        {
+          "name": "sku",
+          "type": "string",
+          "description": "SKU code",
+          "required": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "description": "Product name",
+          "required": true
+        },
+        {
+          "name": "stock",
+          "type": "number",
+          "description": "Initial stock"
+        }
+      ]
+    },
+    {
+      "slug": "search_products",
+      "name": "Search Products",
+      "description": "Search inventory by text",
+      "action": "query_records",
+      "object": "product",
+      "params": [
+        {
+          "name": "search",
+          "type": "string",
+          "description": "Search text"
+        }
+      ]
+    }
+  ],
+  "automations": [
+    {
+      "slug": "low_stock_event",
+      "name": "Emit event when product goes low stock",
+      "trigger": "record.updated",
+      "object": "product",
+      "condition": {
+        "field": "status",
+        "equals": "Low Stock"
+      },
+      "actions": [
+        {
+          "action": "emit_event",
+          "type": "inventory.low_stock"
+        }
+      ]
+    }
+  ],
+  "ui": [
+    {
+      "slug": "products-table",
+      "label": "Products",
+      "icon": "\ud83d\udce6",
+      "view": "table",
+      "object": "product"
+    },
+    {
+      "slug": "inventory-board",
+      "label": "Stock Board",
+      "icon": "\ud83d\uddc2\ufe0f",
+      "view": "kanban",
+      "object": "product",
+      "config": {
+        "group_by": "status"
+      }
+    },
+    {
+      "slug": "movements-table",
+      "label": "Movements",
+      "icon": "\ud83d\udd01",
+      "view": "table",
+      "object": "stock_movement"
+    }
+  ]
+}

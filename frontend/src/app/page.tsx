@@ -123,7 +123,8 @@ const ROADMAP = [
   { phase: "Phase 2", title: "Automations", status: "done", body: "Declarative trigger→condition→action engine off the event bus." },
   { phase: "Phase 3", title: "Connectors", status: "done", body: "Webhook forwarding, external Postgres/Neon, delivery outbox + retry." },
   { phase: "Phase 4", title: "App suite", status: "done", body: "CRM, Invoices, Tasks, Helpdesk — each a pure plugin.json." },
-  { phase: "Next", title: "Marketplace", status: "next", body: "Community plugins, templates, and a hosted tier for teams." },
+  { phase: "Phase 5", title: "Marketplace", status: "done", body: "Community plugin catalog + one-click workspace templates with seed data." },
+  { phase: "Next", title: "Hosted tier", status: "next", body: "Managed Truss for teams, plugin publishing pipeline, and billing." },
 ];
 
 const FAQ = [

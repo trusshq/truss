@@ -12,7 +12,7 @@ from truss_kernel.db import engine
 from truss_kernel.events import bus
 from truss_kernel.models.base import Base
 from truss_kernel.plugins.registry import registry
-from truss_kernel.routes import ai, auth, automations, connectors, events, objects, plugins, records
+from truss_kernel.routes import ai, auth, automations, connectors, events, marketplace, objects, plugins, records
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("truss")
@@ -56,6 +56,7 @@ app.include_router(events.router)
 app.include_router(ai.router)
 app.include_router(automations.router)
 app.include_router(connectors.router)
+app.include_router(marketplace.router)
 
 
 @app.get("/api/health", tags=["meta"])
