@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from truss_kernel.db import get_db
-from truss_kernel.deps import AuthContext, require_member
+from truss_kernel.deps import AuthContext, require_member, require_viewer
 from truss_kernel.events import bus
 from truss_kernel.models.metadata import Record
 from truss_kernel.services import records as svc
@@ -33,7 +33,7 @@ async def _get_object(db: AsyncSession, tenant_id: uuid.UUID, slug: str):
 @router.get("/{object_slug}")
 async def list_records(
     object_slug: str,
-    auth: AuthContext = Depends(require_member),
+    auth: AuthContext = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
@@ -57,7 +57,7 @@ async def create_record(object_slug: str, body: RecordIn, auth: AuthContext = De
 
 
 @router.get("/{object_slug}/{record_id}")
-async def get_record(object_slug: str, record_id: uuid.UUID, auth: AuthContext = Depends(require_member), db: AsyncSession = Depends(get_db)):
+async def get_record(object_slug: str, record_id: uuid.UUID, auth: AuthContext = Depends(require_viewer), db: AsyncSession = Depends(get_db)):
     obj = await _get_object(db, auth.tenant_id, object_slug)
     rec = (await db.execute(select(Record).where(
         Record.id == record_id, Record.tenant_id == auth.tenant_id, Record.object_id == obj.id

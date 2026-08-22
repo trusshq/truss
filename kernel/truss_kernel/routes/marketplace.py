@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from truss_kernel.config import settings
 from truss_kernel.db import get_db
-from truss_kernel.deps import AuthContext, require_admin, require_member
+from truss_kernel.deps import AuthContext, require_admin, require_member, require_viewer
 from truss_kernel.events import bus
 from truss_kernel.marketplace import catalog as mp
 from truss_kernel.plugins.registry import registry
@@ -32,7 +32,7 @@ class TemplateApplyIn(BaseModel):
 # ---------------- community plugins ----------------
 
 @router.get("/plugins")
-async def list_marketplace_plugins(auth: AuthContext = Depends(require_member), db: AsyncSession = Depends(get_db)):
+async def list_marketplace_plugins(auth: AuthContext = Depends(require_viewer), db: AsyncSession = Depends(get_db)):
     """Community catalog with this tenant's install state overlaid."""
     from sqlalchemy import select
     from truss_kernel.models.plugin import PluginInstall
@@ -89,7 +89,7 @@ async def install_marketplace_plugin(
 # ---------------- templates ----------------
 
 @router.get("/templates")
-async def list_templates(auth: AuthContext = Depends(require_member)):
+async def list_templates(auth: AuthContext = Depends(require_viewer)):
     return {"items": [mp.template_summary(t) for t in mp.TEMPLATES], "total": len(mp.TEMPLATES)}
 
 

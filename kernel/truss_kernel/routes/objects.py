@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from truss_kernel.db import get_db
-from truss_kernel.deps import AuthContext, require_admin, require_member
+from truss_kernel.deps import AuthContext, require_admin, require_member, require_viewer
 from truss_kernel.events import bus
 from truss_kernel.models.metadata import FieldDef, FieldType, ObjectDef
 
@@ -59,7 +59,7 @@ def obj_to_dict(o: ObjectDef) -> dict:
 
 
 @router.get("")
-async def list_objects(auth: AuthContext = Depends(require_member), db: AsyncSession = Depends(get_db)):
+async def list_objects(auth: AuthContext = Depends(require_viewer), db: AsyncSession = Depends(get_db)):
     stmt = (
         select(ObjectDef)
         .where(ObjectDef.tenant_id == auth.tenant_id)
@@ -96,7 +96,7 @@ async def create_object(body: ObjectIn, auth: AuthContext = Depends(require_admi
 
 
 @router.get("/{object_slug}")
-async def get_object(object_slug: str, auth: AuthContext = Depends(require_member), db: AsyncSession = Depends(get_db)):
+async def get_object(object_slug: str, auth: AuthContext = Depends(require_viewer), db: AsyncSession = Depends(get_db)):
     obj = (await db.execute(
         select(ObjectDef)
         .where(ObjectDef.tenant_id == auth.tenant_id, ObjectDef.slug == object_slug)

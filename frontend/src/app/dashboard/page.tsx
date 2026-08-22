@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Cog,
   Command,
+  Copy,
   Database,
   Home,
   Info,
@@ -25,9 +26,13 @@ import {
   Puzzle,
   RotateCcw,
   Search,
+  Shield,
   Store,
   Sun,
   Trash2,
+  UserCircle,
+  UserPlus,
+  Users,
   X,
   Zap,
 } from "lucide-react";
@@ -37,12 +42,16 @@ import {
   setToken,
   type AiKeyInfo,
   type ChatResult,
+  type Invite,
   type MarketplacePlugin,
   type MarketplaceTemplate,
   type Me,
+  type Member,
   type ObjectDef,
   type PluginInfo,
   type RecordRow,
+  type RoleInfo,
+  type Workspace,
 } from "@/lib/api";
 import { ACCENT_PRESETS, useTheme, type Density, type Radius, type ThemeMode } from "@/lib/theme";
 
@@ -56,7 +65,9 @@ type View =
   | { kind: "ai" }
   | { kind: "automations" }
   | { kind: "connectors" }
-  | { kind: "settings" };
+  | { kind: "settings" }
+  | { kind: "workspace" }
+  | { kind: "profile" };
 
 /* ---------------- Toast store (module-level — any view can toast) ---------------- */
 
@@ -273,11 +284,19 @@ export default function DashboardPage() {
           <div className="px-2 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-muted">Platform</div>
           <NavItem active={view.kind === "plugins"} onClick={() => setView({ kind: "plugins" })} icon={<Puzzle size={15} />} label="Plugins" />
           <NavItem active={view.kind === "marketplace"} onClick={() => setView({ kind: "marketplace" })} icon={<Store size={15} />} label="Marketplace" />
-          <NavItem active={view.kind === "ai"} onClick={() => setView({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
+          {me.role !== "viewer" && (
+            <NavItem active={view.kind === "ai"} onClick={() => setView({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
+          )}
           <NavItem active={view.kind === "automations"} onClick={() => setView({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
-          <NavItem active={view.kind === "connectors"} onClick={() => setView({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
+          {me.role !== "viewer" && (
+            <NavItem active={view.kind === "connectors"} onClick={() => setView({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
+          )}
           <NavItem active={view.kind === "events"} onClick={() => setView({ kind: "events" })} icon={<Zap size={15} />} label="Events" />
           <NavItem active={view.kind === "settings"} onClick={() => setView({ kind: "settings" })} icon={<Palette size={15} />} label="Appearance" />
+
+          <div className="px-2 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-muted">Account</div>
+          <NavItem active={view.kind === "workspace"} onClick={() => setView({ kind: "workspace" })} icon={<Boxes size={15} />} label="Workspace" badge={me.role} />
+          <NavItem active={view.kind === "profile"} onClick={() => setView({ kind: "profile" })} icon={<UserCircle size={15} />} label="Profile" />
         </nav>
 
         <div className="border-t border-border p-3 text-xs">
@@ -307,6 +326,8 @@ export default function DashboardPage() {
           {view.kind === "automations" && <AutomationsView />}
           {view.kind === "connectors" && <ConnectorsView />}
           {view.kind === "settings" && <SettingsView />}
+          {view.kind === "workspace" && <WorkspaceView me={me} onMeChanged={refresh} />}
+          {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
           {view.kind === "object" && (
             <ObjectView
               object={objects.find((o) => o.slug === view.slug) ?? null}
@@ -2341,6 +2362,648 @@ function SettingsView() {
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+/* ---------------- Workspace (settings, members, invites, roles) ---------------- */
+
+const ROLE_BADGE: Record<string, string> = {
+  owner: "bg-accent text-on-accent",
+  admin: "bg-accent-soft text-accent",
+  member: "bg-card-2 text-foreground",
+  viewer: "bg-card-2 text-muted",
+};
+
+function RoleBadge({ role }: { role: string }) {
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${ROLE_BADGE[role] ?? ROLE_BADGE.member}`}>
+      {role}
+    </span>
+  );
+}
+
+function WorkspaceView({ me, onMeChanged }: { me: Me; onMeChanged: () => Promise<void> }) {
+  const [tab, setTab] = useState<"general" | "members" | "invites" | "roles" | "danger">("general");
+  const [ws, setWs] = useState<Workspace | null>(null);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [invites, setInvites] = useState<Invite[]>([]);
+  const [roles, setRoles] = useState<RoleInfo[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState<Record<string, string>>({});
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("member");
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [confirmDeleteWs, setConfirmDeleteWs] = useState(false);
+  const router = useRouter();
+
+  const isAdmin = me.role === "owner" || me.role === "admin";
+  const isOwner = me.role === "owner";
+
+  const load = useCallback(async () => {
+    try {
+      const [w, m, i, r] = await Promise.all([
+        api<Workspace>("/api/workspace"),
+        api<Member[]>("/api/workspace/members"),
+        api<Invite[]>("/api/workspace/invites"),
+        api<RoleInfo[]>("/api/workspace/roles"),
+      ]);
+      setWs(w);
+      setMembers(m);
+      setInvites(i);
+      setRoles(r);
+      setForm({
+        name: w.name,
+        description: w.description,
+        website: w.website,
+        industry: w.industry,
+        company_size: w.company_size,
+        logo_url: w.logo_url,
+        timezone: w.timezone,
+        locale: w.locale,
+      });
+    } catch {
+      /* non-admin may lack invite access; workspace + members still load above */
+    }
+  }, []);
+
+  useEffect(() => {
+    load().catch(() => {});
+  }, [load]);
+
+  async function saveWorkspace(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api("/api/workspace", { method: "PATCH", body: form });
+      toast("Workspace settings saved", "success");
+      await load();
+      await onMeChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Save failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function sendInvite(e: React.FormEvent) {
+    e.preventDefault();
+    if (!inviteEmail.trim()) return;
+    setBusy(true);
+    try {
+      await api("/api/workspace/invites", { method: "POST", body: { email: inviteEmail.trim(), role: inviteRole } });
+      toast(`Invite sent to ${inviteEmail}`, "success");
+      setInviteEmail("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Invite failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeRole(membershipId: string, role: string) {
+    setBusy(true);
+    try {
+      await api(`/api/workspace/members/${membershipId}`, { method: "PATCH", body: { role } });
+      toast("Role updated", "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Role change failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeMember(membershipId: string) {
+    setBusy(true);
+    try {
+      await api(`/api/workspace/members/${membershipId}`, { method: "DELETE" });
+      toast("Member removed", "success");
+      setConfirmRemove(null);
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Remove failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revokeInvite(id: string) {
+    setBusy(true);
+    try {
+      await api(`/api/workspace/invites/${id}`, { method: "DELETE" });
+      toast("Invite revoked", "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Revoke failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteWorkspace() {
+    setBusy(true);
+    try {
+      await api("/api/workspace", { method: "DELETE" });
+      toast("Workspace deleted", "success");
+      setToken(null);
+      router.replace("/login");
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+      setBusy(false);
+    }
+  }
+
+  function copyInviteLink(token: string) {
+    const link = `${window.location.origin}/invite?token=${token}`;
+    navigator.clipboard.writeText(link).then(
+      () => toast("Invite link copied", "success"),
+      () => toast("Copy failed", "error")
+    );
+  }
+
+  const inputCls =
+    "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition focus:border-accent disabled:opacity-50";
+  const tabs = [
+    { id: "general" as const, label: "General", icon: <Boxes size={13} /> },
+    { id: "members" as const, label: `Members (${members.length})`, icon: <Users size={13} /> },
+    { id: "invites" as const, label: "Invites", icon: <UserPlus size={13} /> },
+    { id: "roles" as const, label: "Roles & permissions", icon: <Shield size={13} /> },
+    ...(isOwner ? [{ id: "danger" as const, label: "Danger zone", icon: <Trash2 size={13} /> }] : []),
+  ];
+
+  return (
+    <div className="max-w-4xl">
+      <h1 className="flex items-center gap-2 text-xl font-bold">
+        <Boxes size={20} /> Workspace
+      </h1>
+      <p className="mt-1 text-sm text-muted">
+        Namespace, profile, members and access control for <span className="font-mono text-accent">{me.tenant_slug}</span>.
+      </p>
+
+      <div className="mt-4 flex flex-wrap gap-1 border-b border-border pb-px">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`flex items-center gap-1.5 rounded-t-lg border-b-2 px-3 py-2 text-sm transition ${
+              tab === t.id
+                ? "border-accent font-semibold text-accent"
+                : "border-transparent text-muted hover:text-foreground"
+            }`}
+          >
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* ---- General ---- */}
+      {tab === "general" && ws && (
+        <form onSubmit={saveWorkspace} className="mt-6 space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Workspace name</span>
+              <input className={inputCls} value={form.name ?? ""} disabled={!isAdmin}
+                onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </label>
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Namespace (slug)</span>
+              <div className="flex items-center gap-1 rounded-lg border border-border bg-card-2 px-3 py-1.5 text-sm">
+                <span className="text-faint">truss.app/</span>
+                <span className="font-mono">{ws.slug}</span>
+              </div>
+            </label>
+            <label className="block text-xs md:col-span-2">
+              <span className="mb-1 block text-muted">Description</span>
+              <textarea className={inputCls} rows={2} value={form.description ?? ""} disabled={!isAdmin}
+                onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            </label>
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Website</span>
+              <input className={inputCls} value={form.website ?? ""} disabled={!isAdmin} placeholder="https://…"
+                onChange={(e) => setForm({ ...form, website: e.target.value })} />
+            </label>
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Industry</span>
+              <input className={inputCls} value={form.industry ?? ""} disabled={!isAdmin} placeholder="Software, Retail, …"
+                onChange={(e) => setForm({ ...form, industry: e.target.value })} />
+            </label>
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Company size</span>
+              <select className={inputCls} value={form.company_size ?? ""} disabled={!isAdmin}
+                onChange={(e) => setForm({ ...form, company_size: e.target.value })}>
+                <option value="">—</option>
+                {["1", "2-10", "11-50", "51-200", "201-1000", "1000+"].map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Logo URL</span>
+              <input className={inputCls} value={form.logo_url ?? ""} disabled={!isAdmin} placeholder="https://…/logo.png"
+                onChange={(e) => setForm({ ...form, logo_url: e.target.value })} />
+            </label>
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Timezone</span>
+              <input className={inputCls} value={form.timezone ?? ""} disabled={!isAdmin} placeholder="Asia/Kolkata"
+                onChange={(e) => setForm({ ...form, timezone: e.target.value })} />
+            </label>
+            <label className="block text-xs">
+              <span className="mb-1 block text-muted">Locale</span>
+              <input className={inputCls} value={form.locale ?? ""} disabled={!isAdmin} placeholder="en-US"
+                onChange={(e) => setForm({ ...form, locale: e.target.value })} />
+            </label>
+          </div>
+          {isAdmin && (
+            <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy ? "Saving…" : "Save workspace settings"}
+            </button>
+          )}
+          {!isAdmin && (
+            <p className="text-xs text-muted">You need admin rights to edit workspace settings.</p>
+          )}
+        </form>
+      )}
+
+      {/* ---- Members ---- */}
+      {tab === "members" && (
+        <div className="mt-6">
+          <div className="overflow-x-auto rounded-xl border border-border">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-card text-left text-xs uppercase tracking-wide text-muted">
+                  <th className="px-3 py-2 font-medium">Member</th>
+                  <th className="px-3 py-2 font-medium">Title</th>
+                  <th className="px-3 py-2 font-medium">Role</th>
+                  <th className="px-3 py-2 font-medium">Last active</th>
+                  <th className="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((m) => {
+                  const isSelf = m.user.id === me.user_id;
+                  const canManage = isAdmin && m.role !== "owner" && !isSelf;
+                  return (
+                    <tr key={m.membership_id} className="border-b border-border/50 last:border-0 hover:bg-card/50">
+                      <td className="px-3 py-2.5">
+                        <div className="flex items-center gap-2.5">
+                          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-accent-soft text-xs font-bold text-accent">
+                            {(m.user.full_name || m.user.email).slice(0, 1).toUpperCase()}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="truncate font-medium">
+                              {m.user.full_name || m.user.email}
+                              {isSelf && <span className="ml-1.5 text-[10px] text-faint">(you)</span>}
+                            </div>
+                            <div className="truncate text-xs text-muted">{m.user.email}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-muted">{m.user.title || "—"}</td>
+                      <td className="px-3 py-2.5">
+                        {canManage ? (
+                          <select
+                            value={m.role}
+                            disabled={busy}
+                            onChange={(e) => changeRole(m.membership_id, e.target.value)}
+                            className="rounded-lg border border-border bg-background px-2 py-1 text-xs outline-none focus:border-accent"
+                          >
+                            {(me.role === "owner" ? ["admin", "member", "viewer"] : ["member", "viewer"]).map((r) => (
+                              <option key={r} value={r}>{r}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <RoleBadge role={m.role} />
+                        )}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-muted">
+                        {m.user.last_login_at ? new Date(m.user.last_login_at).toLocaleString() : "never"}
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        {canManage && (
+                          confirmRemove === m.membership_id ? (
+                            <span className="flex items-center justify-end gap-1">
+                              <button onClick={() => removeMember(m.membership_id)}
+                                className="rounded-md bg-danger/15 px-2 py-1 text-[11px] font-semibold text-danger hover:bg-danger/25">
+                                Confirm
+                              </button>
+                              <button onClick={() => setConfirmRemove(null)}
+                                className="rounded-md px-1.5 py-1 text-[11px] text-muted hover:text-foreground">
+                                Cancel
+                              </button>
+                            </span>
+                          ) : (
+                            <button onClick={() => setConfirmRemove(m.membership_id)} title="Remove member"
+                              className="rounded-md p-1.5 text-muted transition hover:bg-danger/15 hover:text-danger">
+                              <Trash2 size={13} />
+                            </button>
+                          )
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ---- Invites ---- */}
+      {tab === "invites" && (
+        <div className="mt-6 space-y-5">
+          {isAdmin && (
+            <form onSubmit={sendInvite} className="flex flex-wrap items-end gap-2 rounded-xl border border-border bg-card p-4">
+              <label className="block flex-1 text-xs">
+                <span className="mb-1 block text-muted">Email address</span>
+                <input className={inputCls} type="email" required value={inviteEmail} placeholder="teammate@company.com"
+                  onChange={(e) => setInviteEmail(e.target.value)} />
+              </label>
+              <label className="block text-xs">
+                <span className="mb-1 block text-muted">Role</span>
+                <select className={inputCls + " w-32"} value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
+                  {(me.role === "owner" ? ["admin", "member", "viewer"] : ["member", "viewer"]).map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </label>
+              <button disabled={busy || !inviteEmail.trim()}
+                className="flex items-center gap-1.5 rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                <UserPlus size={14} /> Send invite
+              </button>
+            </form>
+          )}
+
+          <div className="space-y-2">
+            {invites.map((i) => (
+              <div key={i.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-card px-4 py-2.5 text-sm">
+                <div className="min-w-0">
+                  <span className="font-medium">{i.email}</span>
+                  <span className="ml-2"><RoleBadge role={i.role} /></span>
+                  <span className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                    i.status === "pending" ? "bg-accent-soft text-accent"
+                    : i.status === "accepted" ? "bg-success/15 text-success"
+                    : "bg-card-2 text-faint"
+                  }`}>
+                    {i.status}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 text-xs text-muted">
+                  {i.status === "pending" && (
+                    <>
+                      <span>expires {new Date(i.expires_at).toLocaleDateString()}</span>
+                      {isAdmin && (
+                        <>
+                          <button onClick={() => copyInviteLink(i.token)} title="Copy invite link"
+                            className="flex items-center gap-1 rounded-md border border-border px-2 py-1 transition hover:border-border-strong hover:text-foreground">
+                            <Copy size={11} /> Link
+                          </button>
+                          <button onClick={() => revokeInvite(i.id)}
+                            className="rounded-md px-2 py-1 text-danger/80 transition hover:bg-danger/10 hover:text-danger">
+                            Revoke
+                          </button>
+                        </>
+                      )}
+                    </>
+                  )}
+                  {i.status !== "pending" && <span>{i.accepted_at ? `accepted ${new Date(i.accepted_at).toLocaleDateString()}` : ""}</span>}
+                </div>
+              </div>
+            ))}
+            {invites.length === 0 && (
+              <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+                No invites yet{isAdmin ? " — send one above." : "."}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ---- Roles matrix ---- */}
+      {tab === "roles" && (
+        <div className="mt-6 overflow-x-auto rounded-xl border border-border">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-card text-left text-xs uppercase tracking-wide text-muted">
+                <th className="px-3 py-2 font-medium">Capability</th>
+                {roles.map((r) => (
+                  <th key={r.role} className="px-3 py-2 text-center font-medium">{r.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {roles.length > 0 &&
+                Object.keys(roles[0].capabilities).map((cap) => (
+                  <tr key={cap} className="border-b border-border/50 last:border-0">
+                    <td className="px-3 py-2 text-xs">
+                      {cap.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                    </td>
+                    {roles.map((r) => (
+                      <td key={r.role} className="px-3 py-2 text-center">
+                        {r.capabilities[cap] ? (
+                          <Check size={14} className="mx-auto text-success" />
+                        ) : (
+                          <X size={14} className="mx-auto text-faint" />
+                        )}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+          <div className="space-y-1 border-t border-border bg-card/50 px-4 py-3">
+            {roles.map((r) => (
+              <p key={r.role} className="text-[11px] text-muted">
+                <span className="font-semibold text-foreground">{r.label}:</span> {r.description}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ---- Danger zone ---- */}
+      {tab === "danger" && isOwner && (
+        <div className="mt-6 rounded-xl border border-danger/40 bg-danger/5 p-5">
+          <h2 className="flex items-center gap-2 text-sm font-semibold text-danger">
+            <Trash2 size={15} /> Delete this workspace
+          </h2>
+          <p className="mt-1 text-xs text-muted">
+            Permanently deletes <span className="font-mono">{me.tenant_slug}</span> — all members, records,
+            plugins, automations and connectors. This cannot be undone.
+          </p>
+          {confirmDeleteWs ? (
+            <div className="mt-3 flex items-center gap-2">
+              <button onClick={deleteWorkspace} disabled={busy}
+                className="rounded-lg bg-danger px-4 py-1.5 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-50">
+                {busy ? "Deleting…" : "Yes, delete everything"}
+              </button>
+              <button onClick={() => setConfirmDeleteWs(false)}
+                className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted hover:text-foreground">
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirmDeleteWs(true)}
+              className="mt-3 rounded-lg border border-danger/50 px-4 py-1.5 text-sm font-semibold text-danger transition hover:bg-danger/10">
+              Delete workspace…
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Profile ---------------- */
+
+function ProfileView({ me, onMeChanged }: { me: Me; onMeChanged: () => Promise<void> }) {
+  const [form, setForm] = useState({
+    full_name: me.full_name ?? "",
+    title: me.title ?? "",
+    phone: me.phone ?? "",
+    avatar_url: me.avatar_url ?? "",
+    timezone: me.timezone ?? "UTC",
+    locale: me.locale ?? "en-US",
+  });
+  const [busy, setBusy] = useState(false);
+  const [pw, setPw] = useState({ current: "", next: "", confirm: "" });
+  const [pwBusy, setPwBusy] = useState(false);
+
+  async function saveProfile(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api("/api/auth/profile", { method: "PATCH", body: form });
+      toast("Profile saved", "success");
+      await onMeChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Save failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changePassword(e: React.FormEvent) {
+    e.preventDefault();
+    if (pw.next !== pw.confirm) {
+      toast("New passwords do not match", "error");
+      return;
+    }
+    setPwBusy(true);
+    try {
+      await api("/api/auth/password", { method: "POST", body: { current_password: pw.current, new_password: pw.next } });
+      toast("Password changed", "success");
+      setPw({ current: "", next: "", confirm: "" });
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Password change failed", "error");
+    } finally {
+      setPwBusy(false);
+    }
+  }
+
+  const inputCls =
+    "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition focus:border-accent";
+
+  return (
+    <div className="max-w-2xl">
+      <h1 className="flex items-center gap-2 text-xl font-bold">
+        <UserCircle size={20} /> Profile
+      </h1>
+      <p className="mt-1 text-sm text-muted">
+        Your personal details, visible to teammates in {me.tenant_name}.
+      </p>
+
+      {/* identity card */}
+      <div className="mt-6 flex items-center gap-4 rounded-xl border border-border bg-card p-5">
+        <span className="flex h-14 w-14 items-center justify-center rounded-full bg-accent-soft text-xl font-bold text-accent">
+          {(me.full_name || me.email).slice(0, 1).toUpperCase()}
+        </span>
+        <div className="min-w-0">
+          <div className="truncate font-semibold">{me.full_name || me.email}</div>
+          <div className="truncate text-xs text-muted">{me.email}</div>
+          <div className="mt-1 flex items-center gap-2">
+            <RoleBadge role={me.role} />
+            {me.last_login_at && (
+              <span className="text-[10px] text-faint">
+                last login {new Date(me.last_login_at).toLocaleString()}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <form onSubmit={saveProfile} className="mt-6 space-y-4">
+        <div className="grid gap-4 md:grid-cols-2">
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Full name</span>
+            <input className={inputCls} value={form.full_name}
+              onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Job title</span>
+            <input className={inputCls} value={form.title} placeholder="Founder, Sales lead, …"
+              onChange={(e) => setForm({ ...form, title: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Phone</span>
+            <input className={inputCls} value={form.phone} placeholder="+91 …"
+              onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Avatar URL</span>
+            <input className={inputCls} value={form.avatar_url} placeholder="https://…/me.png"
+              onChange={(e) => setForm({ ...form, avatar_url: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Timezone</span>
+            <input className={inputCls} value={form.timezone} placeholder="Asia/Kolkata"
+              onChange={(e) => setForm({ ...form, timezone: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Locale</span>
+            <input className={inputCls} value={form.locale} placeholder="en-US"
+              onChange={(e) => setForm({ ...form, locale: e.target.value })} />
+          </label>
+        </div>
+        <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+          {busy ? "Saving…" : "Save profile"}
+        </button>
+      </form>
+
+      {/* password */}
+      <form onSubmit={changePassword} className="mt-8 rounded-xl border border-border bg-card p-5">
+        <h2 className="text-sm font-semibold">Change password</h2>
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Current</span>
+            <input className={inputCls} type="password" required value={pw.current}
+              onChange={(e) => setPw({ ...pw, current: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">New (min 8)</span>
+            <input className={inputCls} type="password" required minLength={8} value={pw.next}
+              onChange={(e) => setPw({ ...pw, next: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Confirm new</span>
+            <input className={inputCls} type="password" required value={pw.confirm}
+              onChange={(e) => setPw({ ...pw, confirm: e.target.value })} />
+          </label>
+        </div>
+        <button disabled={pwBusy || !pw.current || !pw.next}
+          className="mt-3 rounded-lg border border-border px-4 py-1.5 text-sm font-medium transition hover:border-border-strong disabled:opacity-50">
+          {pwBusy ? "Changing…" : "Update password"}
+        </button>
+      </form>
     </div>
   );
 }

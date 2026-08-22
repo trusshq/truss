@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from truss_kernel.db import get_db
-from truss_kernel.deps import AuthContext, require_member
+from truss_kernel.deps import AuthContext, require_member, require_viewer
 from truss_kernel.models.automation import AutomationRun
 from truss_kernel.models.plugin import PluginInstall
 from truss_kernel.plugins.registry import registry
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/automations", tags=["automations"])
 
 
 @router.get("")
-async def list_automations(auth: AuthContext = Depends(require_member), db: AsyncSession = Depends(get_db)):
+async def list_automations(auth: AuthContext = Depends(require_viewer), db: AsyncSession = Depends(get_db)):
     """All automation rules declared by the tenant's ENABLED plugins."""
     installs = (await db.execute(
         select(PluginInstall).where(

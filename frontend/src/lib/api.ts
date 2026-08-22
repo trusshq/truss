@@ -104,6 +104,13 @@ export interface PluginInfo {
 export interface Me {
   user_id: string;
   email: string;
+  full_name?: string;
+  title?: string;
+  phone?: string;
+  avatar_url?: string;
+  timezone?: string;
+  locale?: string;
+  last_login_at?: string | null;
   tenant_id: string;
   tenant_name: string;
   tenant_slug: string;
@@ -177,4 +184,67 @@ export interface MarketplaceTemplate {
   description: string;
   plugins: string[];
   record_count: number;
+}
+
+/* ---------- workspace / members / invites ---------- */
+
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  website: string;
+  industry: string;
+  company_size: string;
+  logo_url: string;
+  timezone: string;
+  locale: string;
+  settings: Record<string, unknown>;
+  created_at: string | null;
+}
+
+export interface MemberUser {
+  id: string;
+  email: string;
+  full_name: string;
+  title: string;
+  phone: string;
+  avatar_url: string;
+  timezone: string;
+  locale: string;
+  last_login_at: string | null;
+  created_at: string | null;
+}
+
+export interface Member {
+  membership_id: string;
+  role: string;
+  joined_at: string | null;
+  user: MemberUser;
+}
+
+export interface Invite {
+  id: string;
+  email: string;
+  role: string;
+  token: string;
+  status: "pending" | "accepted" | "revoked" | "expired";
+  expires_at: string;
+  accepted_at: string | null;
+  created_at: string | null;
+}
+
+export interface RoleInfo {
+  role: string;
+  label: string;
+  description: string;
+  capabilities: Record<string, boolean>;
+}
+
+export interface InvitePublic {
+  email: string;
+  role: string;
+  workspace_name: string;
+  workspace_slug: string;
+  expires_at: string;
 }

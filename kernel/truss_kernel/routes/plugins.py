@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from truss_kernel.db import get_db
-from truss_kernel.deps import AuthContext, require_admin, require_member
+from truss_kernel.deps import AuthContext, require_admin, require_member, require_viewer
 from truss_kernel.events import bus
 from truss_kernel.models.plugin import PluginInstall
 from truss_kernel.plugins.registry import registry
@@ -27,7 +27,7 @@ def _manifest_dict(m) -> dict:
 
 
 @router.get("/catalog")
-async def catalog(auth: AuthContext = Depends(require_member), db: AsyncSession = Depends(get_db)):
+async def catalog(auth: AuthContext = Depends(require_viewer), db: AsyncSession = Depends(get_db)):
     """All discovered plugins + this tenant's install state."""
     installs = {
         i.plugin_id: i

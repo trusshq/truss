@@ -70,3 +70,5 @@ def require_roles(*roles: TenantRole):
 # Convenience presets
 require_admin = require_roles(TenantRole.owner, TenantRole.admin)
 require_member = require_roles(TenantRole.owner, TenantRole.admin, TenantRole.member)
+# viewer is read-only: allowed on GET/list endpoints, never on mutations
+require_viewer = require_roles(TenantRole.owner, TenantRole.admin, TenantRole.member, TenantRole.viewer)

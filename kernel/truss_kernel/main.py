@@ -10,9 +10,10 @@ from truss_kernel.config import settings
 from truss_kernel.connectors import webhook as webhook_adapter
 from truss_kernel.db import engine
 from truss_kernel.events import bus
+from truss_kernel.migrate import run_migrations
 from truss_kernel.models.base import Base
 from truss_kernel.plugins.registry import registry
-from truss_kernel.routes import ai, auth, automations, connectors, events, marketplace, objects, plugins, records
+from truss_kernel.routes import ai, auth, automations, connectors, events, marketplace, objects, plugins, records, workspace
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("truss")
@@ -23,6 +24,7 @@ async def lifespan(app: FastAPI):
     # dev convenience: create tables on boot (Alembic takes over later)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await run_migrations(conn)
     found = registry.discover()
     bus.subscribe("*", automation_engine.handle)
     bus.subscribe("*", webhook_adapter.on_event)
@@ -57,6 +59,7 @@ app.include_router(ai.router)
 app.include_router(automations.router)
 app.include_router(connectors.router)
 app.include_router(marketplace.router)
+app.include_router(workspace.router)
 
 
 @app.get("/api/health", tags=["meta"])

@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from truss_kernel.db import get_db
-from truss_kernel.deps import AuthContext, require_member
+from truss_kernel.deps import AuthContext, require_viewer
 from truss_kernel.models.plugin import EventLog
 
 router = APIRouter(prefix="/api/events", tags=["events"])
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/events", tags=["events"])
 
 @router.get("")
 async def list_events(
-    auth: AuthContext = Depends(require_member),
+    auth: AuthContext = Depends(require_viewer),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(50, le=200),
     type: str | None = None,
