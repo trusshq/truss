@@ -21,8 +21,13 @@ async def chat_completion(
     tools: list[dict] | None = None,
     temperature: float = 0.2,
     timeout_s: float = 60.0,
+    usage_sink: dict | None = None,
 ) -> dict:
-    """POST /chat/completions and return the first choice's message dict."""
+    """POST /chat/completions and return the first choice's message dict.
+
+    If `usage_sink` is a dict, it is filled with the provider's token usage
+    ({"prompt_tokens", "completion_tokens", "total_tokens"}) when reported.
+    """
     url = base_url.rstrip("/") + "/chat/completions"
     payload: dict = {
         "model": model,
@@ -47,6 +52,11 @@ async def chat_completion(
         raise ProviderError(resp.status_code, resp.text)
 
     body = resp.json()
+    if usage_sink is not None:
+        u = body.get("usage") or {}
+        usage_sink["prompt_tokens"] = int(u.get("prompt_tokens") or 0)
+        usage_sink["completion_tokens"] = int(u.get("completion_tokens") or 0)
+        usage_sink["total_tokens"] = int(u.get("total_tokens") or 0)
     choices = body.get("choices") or []
     if not choices:
         raise ProviderError(200, f"provider returned no choices: {body}")

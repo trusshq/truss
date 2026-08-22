@@ -43,6 +43,9 @@ import {
   api,
   getToken,
   setToken,
+  type AgentInfo,
+  type AgentRunResult,
+  type AgentTaskInfo,
   type AiKeyInfo,
   type ChatResult,
   type Invite,
@@ -66,6 +69,7 @@ type View =
   | { kind: "marketplace" }
   | { kind: "events" }
   | { kind: "ai" }
+  | { kind: "agents" }
   | { kind: "automations" }
   | { kind: "connectors" }
   | { kind: "settings" }
@@ -317,6 +321,7 @@ function SidebarContent({
           {me.role !== "viewer" && (
             <NavItem active={view.kind === "ai"} onClick={() => go({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
           )}
+          <NavItem active={view.kind === "agents"} onClick={() => go({ kind: "agents" })} icon={<Users size={15} />} label="AI Employees" />
           <NavItem active={view.kind === "automations"} onClick={() => go({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
           {me.role !== "viewer" && (
             <NavItem active={view.kind === "connectors"} onClick={() => go({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
@@ -549,6 +554,7 @@ export default function DashboardPage() {
             {view.kind === "marketplace" && <MarketplaceView onChanged={refresh} />}
             {view.kind === "events" && <EventsView />}
             {view.kind === "ai" && <AiView onChanged={refresh} />}
+            {view.kind === "agents" && <AgentsView onChanged={refresh} />}
             {view.kind === "automations" && <AutomationsView />}
             {view.kind === "connectors" && <ConnectorsView />}
             {view.kind === "settings" && <SettingsView />}
@@ -764,6 +770,7 @@ function CommandPalette({
       { label: "Plugins", icon: <Puzzle size={14} />, view: { kind: "plugins" } },
       { label: "Marketplace", icon: <Store size={14} />, view: { kind: "marketplace" } },
       { label: "AI Agent", icon: <Bot size={14} />, view: { kind: "ai" } },
+      { label: "AI Employees", icon: <Users size={14} />, view: { kind: "agents" } },
       { label: "Automations", icon: <Cog size={14} />, view: { kind: "automations" } },
       { label: "Connectors", icon: <Cable size={14} />, view: { kind: "connectors" } },
       { label: "Events", icon: <Zap size={14} />, view: { kind: "events" } },
@@ -2217,6 +2224,382 @@ function ConnectorsView() {
             No connectors yet. Add a webhook to stream events to your own analytics.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- AI Employees (Agents) ---------------- */
+
+const AGENT_ICONS = ["🤖", "📞", "💼", "🧾", "🎧", "📊", "🔧", "✍️", "🛡️", "🚀"];
+
+function AgentsView({ onChanged }: { onChanged: () => Promise<void> }) {
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [selected, setSelected] = useState<AgentInfo | null>(null);
+  const [tasks, setTasks] = useState<AgentTaskInfo[]>([]);
+  const [showHire, setShowHire] = useState(false);
+  const [form, setForm] = useState({ name: "", role: "", persona: "", icon: "🤖", permission_role: "member", budget_tokens: 0 });
+  const [taskForm, setTaskForm] = useState({ title: "", description: "", needs_review: false });
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [runningTask, setRunningTask] = useState<string | null>(null);
+  const [expandedTask, setExpandedTask] = useState<string | null>(null);
+
+  const loadAgents = useCallback(async () => {
+    setAgents(await api<AgentInfo[]>("/api/agents"));
+  }, []);
+
+  const loadTasks = useCallback(async (agentId: string) => {
+    setTasks(await api<AgentTaskInfo[]>(`/api/agents/${agentId}/tasks`));
+  }, []);
+
+  useEffect(() => {
+    loadAgents().catch(() => {});
+  }, [loadAgents]);
+
+  useEffect(() => {
+    if (selected) loadTasks(selected.id).catch(() => {});
+  }, [selected, loadTasks]);
+
+  async function hire(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const created = await api<AgentInfo>("/api/agents", { method: "POST", body: form });
+      setShowHire(false);
+      setForm({ name: "", role: "", persona: "", icon: "🤖", permission_role: "member", budget_tokens: 0 });
+      await loadAgents();
+      setSelected(created);
+      toast(`${created.icon} ${created.name} hired`, "success");
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      setError(typeof d === "string" ? d : JSON.stringify(d));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function assignTask(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selected) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/api/agents/${selected.id}/tasks`, {
+        method: "POST",
+        body: { agent_id: selected.id, ...taskForm },
+      });
+      setShowTaskForm(false);
+      setTaskForm({ title: "", description: "", needs_review: false });
+      await loadTasks(selected.id);
+      toast("Task assigned", "success");
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      setError(typeof d === "string" ? d : JSON.stringify(d));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runTask(taskId: string) {
+    if (!selected) return;
+    setRunningTask(taskId);
+    try {
+      const res = await api<AgentRunResult>(`/api/agents/${selected.id}/tasks/${taskId}/run`, { method: "POST" });
+      await loadTasks(selected.id);
+      await loadAgents();
+      await onChanged();
+      if (res.run.ok) toast(`✓ ${selected.name} finished the task`, "success");
+      else toast(`Task failed: ${res.run.error || "unknown"}`, "error");
+      setExpandedTask(taskId);
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Run failed", "error");
+    } finally {
+      setRunningTask(null);
+    }
+  }
+
+  async function approveTask(taskId: string) {
+    if (!selected) return;
+    await api(`/api/agents/${selected.id}/tasks/${taskId}/approve`, { method: "POST" });
+    await loadTasks(selected.id);
+    toast("Task approved", "success");
+  }
+
+  async function rejectTask(taskId: string) {
+    if (!selected) return;
+    await api(`/api/agents/${selected.id}/tasks/${taskId}/reject`, { method: "POST" });
+    await loadTasks(selected.id);
+  }
+
+  async function pauseAgent() {
+    if (!selected) return;
+    const updated = await api<AgentInfo>(`/api/agents/${selected.id}/pause`, { method: "POST" });
+    setSelected(updated);
+    await loadAgents();
+  }
+
+  async function resumeAgent() {
+    if (!selected) return;
+    const updated = await api<AgentInfo>(`/api/agents/${selected.id}/resume`, { method: "POST" });
+    setSelected(updated);
+    await loadAgents();
+  }
+
+  async function terminateAgent() {
+    if (!selected) return;
+    if (!confirm(`Terminate ${selected.name}? Their tasks will be removed.`)) return;
+    await api(`/api/agents/${selected.id}`, { method: "DELETE" });
+    setSelected(null);
+    setTasks([]);
+    await loadAgents();
+    toast("Agent terminated", "info");
+  }
+
+  const inputCls =
+    "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent";
+
+  const statusBadge = (s: AgentInfo["status"]) => {
+    const map = { active: "bg-emerald-500/15 text-emerald-500", paused: "bg-amber-500/15 text-amber-500", terminated: "bg-red-500/15 text-red-500" };
+    return <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${map[s]}`}>{s}</span>;
+  };
+
+  const taskBadge = (s: AgentTaskInfo["status"]) => {
+    const map: Record<string, string> = {
+      proposed: "bg-slate-500/15 text-slate-400",
+      approved: "bg-blue-500/15 text-blue-400",
+      running: "bg-purple-500/15 text-purple-400",
+      done: "bg-emerald-500/15 text-emerald-500",
+      failed: "bg-red-500/15 text-red-500",
+      rejected: "bg-slate-500/15 text-slate-500",
+    };
+    return <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${map[s] || ""}`}>{s}</span>;
+  };
+
+  // ---------- detail view ----------
+  if (selected) {
+    return (
+      <div>
+        <button onClick={() => setSelected(null)} className="mb-4 flex items-center gap-1 text-sm text-muted hover:text-foreground">
+          <ChevronLeft size={14} /> All agents
+        </button>
+
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-border bg-card text-2xl">{selected.icon}</div>
+            <div>
+              <h1 className="text-xl font-bold">{selected.name}</h1>
+              <p className="text-sm text-muted">{selected.role || "General assistant"} · {statusBadge(selected.status)}</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            {selected.status === "active" ? (
+              <button onClick={pauseAgent} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-card">⏸ Pause</button>
+            ) : selected.status === "paused" ? (
+              <button onClick={resumeAgent} className="rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-card">▶ Resume</button>
+            ) : null}
+            <button onClick={terminateAgent} className="rounded-lg border border-red-500/40 px-3 py-1.5 text-sm text-red-400 hover:bg-red-500/10">Terminate</button>
+          </div>
+        </div>
+
+        {/* stats */}
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          <div className="rounded-xl border border-border bg-card p-3">
+            <div className="text-xs text-muted">Runs</div>
+            <div className="text-lg font-bold">{selected.runs_count}</div>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-3">
+            <div className="text-xs text-muted">Tokens used</div>
+            <div className="text-lg font-bold">{selected.tokens_used.toLocaleString()}</div>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-3">
+            <div className="text-xs text-muted">Budget</div>
+            <div className="text-lg font-bold">{selected.budget_tokens > 0 ? selected.budget_tokens.toLocaleString() : "∞"}</div>
+          </div>
+        </div>
+
+        {selected.persona && (
+          <div className="mt-4 rounded-xl border border-border bg-card p-3">
+            <div className="text-xs font-semibold text-muted">PERSONA</div>
+            <p className="mt-1 text-sm">{selected.persona}</p>
+          </div>
+        )}
+
+        {/* tasks */}
+        <div className="mt-6 flex items-center justify-between">
+          <h2 className="text-lg font-bold">Tasks</h2>
+          <button onClick={() => setShowTaskForm((v) => !v)} className="rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent hover:brightness-110">
+            {showTaskForm ? "Close" : "+ Assign task"}
+          </button>
+        </div>
+
+        {showTaskForm && (
+          <form onSubmit={assignTask} className="mt-3 space-y-3 rounded-xl border border-border bg-card p-4">
+            <input className={inputCls} placeholder="Task title (e.g. Qualify the new inbound lead)" value={taskForm.title}
+              onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })} required />
+            <textarea className={inputCls} rows={2} placeholder="Details (optional)" value={taskForm.description}
+              onChange={(e) => setTaskForm({ ...taskForm, description: e.target.value })} />
+            <label className="flex items-center gap-2 text-xs text-muted">
+              <input type="checkbox" checked={taskForm.needs_review}
+                onChange={(e) => setTaskForm({ ...taskForm, needs_review: e.target.checked })} />
+              Require my approval before running
+            </label>
+            {error && <div className="text-xs text-danger">{error}</div>}
+            <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent hover:brightness-110 disabled:opacity-50">
+              {busy ? "…" : "Assign"}
+            </button>
+          </form>
+        )}
+
+        <div className="mt-3 space-y-2">
+          {tasks.length === 0 && <p className="text-sm text-muted">No tasks yet. Assign one above.</p>}
+          {tasks.map((t) => (
+            <div key={t.id} className="rounded-xl border border-border bg-card p-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {taskBadge(t.status)}
+                  <span className="text-sm font-medium">{t.title}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {t.status === "proposed" && (
+                    <>
+                      <button onClick={() => approveTask(t.id)} className="rounded-md bg-emerald-500/15 px-2 py-1 text-xs font-semibold text-emerald-500 hover:bg-emerald-500/25">Approve</button>
+                      <button onClick={() => rejectTask(t.id)} className="rounded-md bg-red-500/15 px-2 py-1 text-xs font-semibold text-red-400 hover:bg-red-500/25">Reject</button>
+                    </>
+                  )}
+                  {(t.status === "approved" || t.status === "failed") && (
+                    <button onClick={() => runTask(t.id)} disabled={runningTask === t.id || selected.status !== "active"}
+                      className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-on-accent hover:brightness-110 disabled:opacity-50">
+                      {runningTask === t.id ? "Running…" : "▶ Run"}
+                    </button>
+                  )}
+                  <button onClick={() => setExpandedTask(expandedTask === t.id ? null : t.id)}
+                    className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:bg-background">
+                    {expandedTask === t.id ? "Hide" : "Details"}
+                  </button>
+                </div>
+              </div>
+              {t.description && <p className="mt-1 text-xs text-muted">{t.description}</p>}
+              {t.error && <p className="mt-1 text-xs text-red-400">{t.error}</p>}
+              {expandedTask === t.id && (
+                <div className="mt-2 space-y-2 border-t border-border pt-2">
+                  {t.result?.reply && (
+                    <div>
+                      <div className="text-[10px] font-semibold text-muted">AGENT REPLY</div>
+                      <p className="mt-0.5 text-sm">{t.result.reply}</p>
+                    </div>
+                  )}
+                  {t.result?.trace && t.result.trace.length > 0 && (
+                    <div>
+                      <div className="text-[10px] font-semibold text-muted">TOOL TRACE ({t.result.trace.length} calls)</div>
+                      <div className="mt-1 space-y-1">
+                        {t.result.trace.map((tr, i) => (
+                          <div key={i} className="rounded-md bg-background px-2 py-1 text-xs">
+                            <span className="font-mono text-accent">{tr.tool}</span>
+                            <span className="text-muted"> {JSON.stringify(tr.args).slice(0, 120)}</span>
+                            {tr.result?.error ? <span className="text-red-400"> → {String(tr.result.error).slice(0, 100)}</span> : null}
+                            {tr.result?.created ? <span className="text-emerald-500"> → created</span> : null}
+                            {tr.result?.updated ? <span className="text-emerald-500"> → updated</span> : null}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <div className="text-[10px] text-muted">{t.steps} steps · {t.tokens_used} tokens</div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // ---------- list view ----------
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">🤖 AI Employees</h1>
+        <button onClick={() => setShowHire((v) => !v)} className="rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent hover:brightness-110">
+          {showHire ? "Close" : "+ Hire agent"}
+        </button>
+      </div>
+      <p className="mt-1 text-sm text-muted">
+        Hire AI employees that work your business data autonomously. Each agent operates under its own
+        permissions, follows its persona, and every action is audited. Assign tasks, approve the ones that
+        need a human eye, and watch them work.
+      </p>
+
+      {showHire && (
+        <form onSubmit={hire} className="mt-4 space-y-3 rounded-xl border border-border bg-card p-4">
+          <div className="grid grid-cols-2 gap-3">
+            <input className={inputCls} placeholder="Name (e.g. Sam the SDR)" value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+            <input className={inputCls} placeholder="Role (e.g. Sales Development Rep)" value={form.role}
+              onChange={(e) => setForm({ ...form, role: e.target.value })} />
+          </div>
+          <textarea className={inputCls} rows={2} placeholder="Persona — how should this employee behave? (optional)" value={form.persona}
+            onChange={(e) => setForm({ ...form, persona: e.target.value })} />
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted">Icon:</span>
+            {AGENT_ICONS.map((ic) => (
+              <button key={ic} type="button" onClick={() => setForm({ ...form, icon: ic })}
+                className={`rounded-md p-1 text-lg ${form.icon === ic ? "bg-accent/20 ring-1 ring-accent" : "hover:bg-card"}`}>
+                {ic}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-muted">Permission level</label>
+              <select className={inputCls} value={form.permission_role}
+                onChange={(e) => setForm({ ...form, permission_role: e.target.value })}>
+                <option value="member">Member (can edit records)</option>
+                <option value="viewer">Viewer (read-only)</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-muted">Token budget (0 = unlimited)</label>
+              <input className={inputCls} type="number" min={0} value={form.budget_tokens}
+                onChange={(e) => setForm({ ...form, budget_tokens: parseInt(e.target.value) || 0 })} />
+            </div>
+          </div>
+          {error && <div className="text-xs text-danger">{error}</div>}
+          <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent hover:brightness-110 disabled:opacity-50">
+            {busy ? "Hiring…" : "Hire agent"}
+          </button>
+        </form>
+      )}
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {agents.length === 0 && !showHire && (
+          <div className="col-span-full rounded-xl border border-dashed border-border p-8 text-center">
+            <div className="text-3xl">🤖</div>
+            <p className="mt-2 text-sm text-muted">No AI employees yet. Hire your first one to start automating work.</p>
+          </div>
+        )}
+        {agents.map((a) => (
+          <button key={a.id} onClick={() => setSelected(a)}
+            className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-accent/50">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">{a.icon}</span>
+                <div>
+                  <div className="font-semibold">{a.name}</div>
+                  <div className="text-xs text-muted">{a.role || "General assistant"}</div>
+                </div>
+              </div>
+              {statusBadge(a.status)}
+            </div>
+            <div className="mt-3 flex items-center gap-4 text-xs text-muted">
+              <span>{a.runs_count} runs</span>
+              <span>{a.tokens_used.toLocaleString()} tokens</span>
+            </div>
+          </button>
+        ))}
       </div>
     </div>
   );

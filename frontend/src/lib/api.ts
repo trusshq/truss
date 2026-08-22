@@ -255,3 +255,47 @@ export interface InvitePublic {
   workspace_slug: string;
   expires_at: string;
 }
+
+/* ---------- AI employees (agents) ---------- */
+
+export interface AgentInfo {
+  id: string;
+  name: string;
+  role: string;
+  persona: string;
+  icon: string;
+  status: "active" | "paused" | "terminated";
+  ai_key_id: string | null;
+  model_override: string;
+  permission_role: string;
+  allowed_plugins: string[];
+  budget_tokens: number;
+  tokens_used: number;
+  runs_count: number;
+  settings: Record<string, unknown>;
+  created_at: string | null;
+}
+
+export interface AgentTaskInfo {
+  id: string;
+  agent_id: string;
+  title: string;
+  description: string;
+  status: "proposed" | "approved" | "running" | "done" | "failed" | "rejected";
+  needs_review: boolean;
+  priority: number;
+  created_by: string | null;
+  approved_by: string | null;
+  result: { reply?: string; trace?: ChatTraceItem[] };
+  error: string;
+  steps: number;
+  tokens_used: number;
+  started_at: string;
+  finished_at: string;
+  created_at: string | null;
+}
+
+export interface AgentRunResult {
+  task: AgentTaskInfo;
+  run: { ok: boolean; reply?: string; trace?: ChatTraceItem[]; steps?: number; tokens?: number; error?: string };
+}

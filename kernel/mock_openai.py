@@ -67,6 +67,7 @@ class Handler(BaseHTTPRequestHandler):
             "object": "chat.completion",
             "model": body.get("model", "mock-model"),
             "choices": [{"index": 0, "message": choice_msg, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
         }
         data = json.dumps(resp).encode()
         self.send_response(200)

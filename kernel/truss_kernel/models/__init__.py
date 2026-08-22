@@ -1,3 +1,4 @@
+from truss_kernel.models.agent import Agent, AgentStatus, AgentTask, TaskStatus
 from truss_kernel.models.ai import AiKey
 from truss_kernel.models.automation import AutomationRun
 from truss_kernel.models.base import Base
@@ -7,6 +8,10 @@ from truss_kernel.models.plugin import EventLog, PluginInstall
 from truss_kernel.models.tenant import Membership, Tenant, TenantRole, User
 
 __all__ = [
+    "Agent",
+    "AgentStatus",
+    "AgentTask",
+    "TaskStatus",
     "AiKey",
     "AutomationRun",
     "Base",
