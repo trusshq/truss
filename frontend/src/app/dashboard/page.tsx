@@ -15,6 +15,7 @@ import {
   Command,
   Copy,
   Database,
+  History,
   Home,
   Info,
   Kanban,
@@ -47,6 +48,8 @@ import {
   type AgentRunResult,
   type AgentTaskInfo,
   type AiKeyInfo,
+  type HistoryEntry,
+  type TrashItem,
   type ChatResult,
   type Invite,
   type MarketplacePlugin,
@@ -1155,6 +1158,10 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [historyFor, setHistoryFor] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [trash, setTrash] = useState<TrashItem[]>([]);
+  const [showTrash, setShowTrash] = useState(false);
   const PAGE_SIZE = 25;
 
   // debounce search input
@@ -1251,7 +1258,7 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
     if (!object) return;
     try {
       await api(`/api/records/${object.slug}/${id}`, { method: "DELETE" });
-      toast(`${object.name} deleted`, "success");
+      toast(`${object.name} moved to trash`, "success");
       setConfirmDelete(null);
       await load();
       await onChanged();
@@ -1260,6 +1267,49 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
       toast(typeof d === "string" ? d : "Delete failed", "error");
     }
   }
+
+  async function openHistory(id: string) {
+    if (!object) return;
+    if (historyFor === id) {
+      setHistoryFor(null);
+      return;
+    }
+    try {
+      const h = await api<HistoryEntry[]>(`/api/records/${object.slug}/${id}/history`);
+      setHistory(h);
+      setHistoryFor(id);
+    } catch {
+      toast("Could not load history", "error");
+    }
+  }
+
+  async function loadTrash() {
+    if (!object) return;
+    try {
+      const t = await api<TrashItem[]>(`/api/records/trash?object_slug=${object.slug}`);
+      setTrash(t);
+    } catch {
+      setTrash([]);
+    }
+  }
+
+  async function restore(id: string) {
+    try {
+      await api(`/api/records/trash/${id}/restore`, { method: "POST" });
+      toast("Record restored", "success");
+      await loadTrash();
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Restore failed", "error");
+    }
+  }
+
+  useEffect(() => {
+    if (showTrash) loadTrash();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showTrash, object?.slug]);
 
   const input =
     "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition focus:border-accent";
@@ -1276,6 +1326,12 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
           </p>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => setShowTrash((v) => !v)}
+            className={`flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition hover:border-border-strong ${showTrash ? "text-foreground" : "text-muted"}`}
+          >
+            <Trash2 size={13} /> Trash
+          </button>
           <div className="relative">
             <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
             <input
@@ -1400,6 +1456,13 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
                   <td className="px-3 py-2 text-right">
                     <div className="flex items-center justify-end gap-1 opacity-0 transition group-hover:opacity-100">
                       <button
+                        onClick={() => openHistory(r.id)}
+                        title="History"
+                        className={`rounded-md p-1.5 transition hover:bg-accent-soft hover:text-accent ${historyFor === r.id ? "text-accent" : "text-muted"}`}
+                      >
+                        <History size={13} />
+                      </button>
+                      <button
                         onClick={() => startEdit(r)}
                         title="Edit"
                         className="rounded-md p-1.5 text-muted transition hover:bg-accent-soft hover:text-accent"
@@ -1446,6 +1509,55 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
           </tbody>
         </table>
       </div>
+
+      {/* history panel */}
+      {historyFor && (
+        <div className="mt-4 rounded-xl border border-border bg-card p-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold">Version history · record {historyFor.slice(0, 8)}…</h3>
+            <button onClick={() => setHistoryFor(null)} className="text-xs text-muted hover:text-foreground">Close</button>
+          </div>
+          {history.length === 0 && <p className="mt-2 text-xs text-muted">No history recorded.</p>}
+          <div className="mt-2 space-y-2">
+            {history.map((h) => (
+              <div key={h.version} className="rounded-lg border border-border bg-background p-2.5">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="rounded-full bg-accent/15 px-2 py-0.5 font-semibold text-accent">v{h.version}</span>
+                  <span className={h.actor_type === "agent" ? "rounded-full bg-purple-500/15 px-2 py-0.5 font-semibold text-purple-400" : "rounded-full bg-slate-500/15 px-2 py-0.5 text-muted"}>
+                    {h.actor_type === "agent" ? "🤖 AI employee" : "👤 user"}
+                  </span>
+                  <span className="text-muted">{h.created_at ? new Date(h.created_at).toLocaleString() : ""}</span>
+                </div>
+                <pre className="mt-1.5 overflow-x-auto text-[11px] text-muted">{JSON.stringify(h.data, null, 2)}</pre>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* trash panel */}
+      {showTrash && (
+        <div className="mt-4 rounded-xl border border-border bg-card p-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold">🗑 Trash · {object.name_plural}</h3>
+            <button onClick={() => setShowTrash(false)} className="text-xs text-muted hover:text-foreground">Close</button>
+          </div>
+          {trash.length === 0 && <p className="mt-2 text-xs text-muted">Trash is empty.</p>}
+          <div className="mt-2 space-y-2">
+            {trash.map((t) => (
+              <div key={t.id} className="flex items-center justify-between rounded-lg border border-border bg-background p-2.5">
+                <div className="min-w-0">
+                  <div className="truncate text-sm">{Object.values(t.data).slice(0, 3).map((v) => String(v)).join(" · ") || t.id.slice(0, 8)}</div>
+                  <div className="text-[11px] text-muted">deleted {t.deleted_at ? new Date(t.deleted_at).toLocaleString() : ""}</div>
+                </div>
+                <button onClick={() => restore(t.id)} className="flex items-center gap-1 rounded-md bg-emerald-500/15 px-2.5 py-1 text-xs font-semibold text-emerald-500 hover:bg-emerald-500/25">
+                  <RotateCcw size={12} /> Restore
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* pagination */}
       {total > PAGE_SIZE && (

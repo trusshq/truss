@@ -258,6 +258,22 @@ export interface InvitePublic {
 
 /* ---------- AI employees (agents) ---------- */
 
+export interface TrashItem {
+  id: string;
+  object: string;
+  data: Record<string, unknown>;
+  deleted_at: string | null;
+  created_at: string | null;
+}
+
+export interface HistoryEntry {
+  version: number;
+  data: Record<string, unknown>;
+  changed_by: string | null;
+  actor_type: string;
+  created_at: string | null;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;

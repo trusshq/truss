@@ -30,6 +30,9 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str, str]] = [
     ("users", "timezone", "VARCHAR(64)", "'UTC'"),
     ("users", "locale", "VARCHAR(16)", "'en-US'"),
     ("users", "last_login_at", "TIMESTAMPTZ", "NULL"),
+    # Phase A3 safety rails: soft delete on records
+    ("records", "deleted_at", "TIMESTAMPTZ", "NULL"),
+    ("records", "deleted_by", "UUID", "NULL"),
 ]
 
 

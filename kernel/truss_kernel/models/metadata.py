@@ -3,11 +3,19 @@
 Objects and fields are DATA, not DDL. Actual records live in `records`
 with dynamic field values stored as JSONB. This is the kernel's heart:
 plugins (and users) declare new business objects without migrations.
+
+Safety rails (Phase A3):
+- Record.deleted_at: soft delete (trash + restore) instead of hard delete
+- RecordHistory: a snapshot of record data on every create/update (versioning)
+- FieldDef.options["hidden_roles"]: field-level permissions (roles that must
+  NOT see this field's value)
+- FieldDef.options["rules"]: declarative validation (min/max/pattern/unique)
 """
 import uuid
+from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import Boolean, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -74,7 +82,11 @@ class FieldDef(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 
 class Record(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """A row of a metadata-defined object. `data` holds field_slug -> value."""
+    """A row of a metadata-defined object. `data` holds field_slug -> value.
+
+    Soft delete: `deleted_at` set => record is in the trash (hidden from all
+    queries, restorable, purgeable). Hard delete only via explicit purge.
+    """
 
     __tablename__ = "records"
 
@@ -86,3 +98,30 @@ class Record(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     )
     data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
+class RecordHistory(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Versioning: a snapshot of a record's data after every create/update.
+
+    version 1 = the create snapshot. Restoring writes a new version (history
+    is append-only — nothing is ever lost).
+    """
+
+    __tablename__ = "record_history"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    record_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("records.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    object_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("object_defs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    changed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # 'user' | 'agent' — who made this change (agents are auditable actors)
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False, default="user")

@@ -90,8 +90,12 @@ async def collect_tools(db: AsyncSession, tenant_id: uuid.UUID) -> tuple[list[di
 # ---------- tool execution ----------
 
 async def _execute_tool(db: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UUID,
-                        spec: dict, args: dict) -> dict:
-    """Execute one tool under the invoking user's tenant scope."""
+                        spec: dict, args: dict, actor_type: str = "user") -> dict:
+    """Execute one tool under the invoking actor's tenant scope.
+
+    actor_type is 'user' for chat and 'agent' for autonomous AI employees —
+    it flows into record history + events for auditing.
+    """
     action = spec["action"]
     object_slug = args.get("object") or spec.get("object")
 
@@ -106,7 +110,7 @@ async def _execute_tool(db: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UU
         if action == "create_record":
             data = {k: v for k, v in args.items() if k != "object"}
             try:
-                rec = await svc.create_record(db, tenant_id, user_id, obj, data)
+                rec = await svc.create_record(db, tenant_id, user_id, obj, data, actor_type=actor_type)
                 await db.commit()
                 return {"created": svc.rec_to_dict(rec)}
             except svc.ValidationError as e:
@@ -118,7 +122,7 @@ async def _execute_tool(db: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UU
                 return {"error": "record_id is required"}
             patch = {k: v for k, v in args.items() if k not in ("object", "record_id")}
             try:
-                rec = await svc.update_record(db, tenant_id, user_id, obj, uuid.UUID(str(record_id)), patch)
+                rec = await svc.update_record(db, tenant_id, user_id, obj, uuid.UUID(str(record_id)), patch, actor_type=actor_type)
                 await db.commit()
                 return {"updated": svc.rec_to_dict(rec)}
             except svc.RecordNotFound as e:

@@ -183,8 +183,9 @@ async def run_task(db: AsyncSession, tenant_id: uuid.UUID, agent: Agent, task: A
                     result = {"error": f"unknown tool '{fn_name}'"}
                 else:
                     logger.info("agent %s tool call: %s args=%s", agent.name, fn_name, args)
-                    # The agent acts under its OWN id through the validated path.
-                    result = await _execute_tool(db, tenant_id, agent.id, spec, args)
+                    # The agent acts under its OWN id through the validated path,
+                    # flagged actor_type='agent' in history + events.
+                    result = await _execute_tool(db, tenant_id, agent.id, spec, args, actor_type="agent")
                 trace.append({"tool": fn_name, "args": args, "result": result})
                 messages.append({
                     "role": "tool",

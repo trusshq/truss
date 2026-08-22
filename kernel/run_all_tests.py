@@ -33,6 +33,7 @@ SUITES = [
     "marketplace_smoke_test.py",
     "workspace_smoke_test.py",
     "agent_smoke_test.py",
+    "safety_smoke_test.py",
 ]
 
 
