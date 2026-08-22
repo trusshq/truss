@@ -34,3 +34,6 @@ Thumbs.db
 *.log
 logs/
 tmp/
+
+# external plugins dir — runtime materialization target for marketplace installs
+plugins/
