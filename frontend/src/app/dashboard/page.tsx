@@ -95,6 +95,7 @@ type View =
   | { kind: "chat" }
   | { kind: "object"; slug: string }
   | { kind: "kanban"; slug: string; object: string; groupBy: string }
+  | { kind: "apphome"; slug: string; label: string; icon: string; objects: string[] }
   | { kind: "plugins" }
   | { kind: "marketplace" }
   | { kind: "events" }
@@ -241,6 +242,7 @@ function SidebarContent({
   toggleSection,
   tableSurfaces,
   boardSurfaces,
+  homeSurfaces,
   onNavigate,
   onOpenPalette,
   onSignOut,
@@ -252,6 +254,7 @@ function SidebarContent({
   toggleSection: (id: string) => void;
   tableSurfaces: { label: string; icon: string; object?: string; slug: string; view: string; groupBy?: string }[];
   boardSurfaces: { label: string; icon: string; object?: string; slug: string; view: string; groupBy?: string }[];
+  homeSurfaces: { label: string; icon: string; slug: string; objects: string[] }[];
   onNavigate?: () => void;
   onOpenPalette: () => void;
   onSignOut: () => void;
@@ -299,18 +302,27 @@ function SidebarContent({
           label="Chat"
         />
 
-        {/* Apps — every table view, grouped in one dropdown */}
+        {/* Apps — app homes + every table view, grouped in one dropdown */}
         <NavSection
           icon={<LayoutGrid size={15} />}
           label="Apps"
-          count={tableSurfaces.length}
+          count={homeSurfaces.length + tableSurfaces.length}
           open={openSections.apps}
           onToggle={() => toggleSection("apps")}
-          active={view.kind === "object"}
+          active={view.kind === "object" || view.kind === "apphome"}
         >
-          {tableSurfaces.length === 0 && (
+          {homeSurfaces.length === 0 && tableSurfaces.length === 0 && (
             <div className="px-2 py-1 text-xs text-muted">Install a plugin to see its apps →</div>
           )}
+          {homeSurfaces.map((s) => (
+            <NavItem
+              key={s.slug}
+              active={view.kind === "apphome" && view.slug === s.slug}
+              onClick={() => go({ kind: "apphome", slug: s.slug, label: s.label, icon: s.icon, objects: s.objects })}
+              icon={<span className="text-[13px] leading-none">{s.icon}</span>}
+              label={`${s.label} Home`}
+            />
+          ))}
           {tableSurfaces.map((s) => (
             <NavItem
               key={s.slug}
@@ -579,6 +591,19 @@ export default function DashboardPage() {
   const tableSurfaces = useMemo(() => surfaces.filter((s) => s.view === "table"), [surfaces]);
   const boardSurfaces = useMemo(() => surfaces.filter((s) => s.view === "kanban"), [surfaces]);
 
+  // App home surfaces (view: "dashboard") — polished per-plugin landing pages
+  const homeSurfaces = useMemo(() => {
+    const out: { label: string; icon: string; slug: string; objects: string[] }[] = [];
+    for (const p of plugins.filter((p) => p.installed && p.enabled)) {
+      for (const s of p.ui) {
+        if (s.view === "dashboard") {
+          out.push({ label: s.label, icon: s.icon, slug: s.slug, objects: s.config?.objects ?? [] });
+        }
+      }
+    }
+    return out;
+  }, [plugins]);
+
   // Auto-open the section that contains the active view (e.g. after a palette jump)
   useEffect(() => {
     setOpenSections((s) => {
@@ -624,6 +649,7 @@ export default function DashboardPage() {
     toggleSection,
     tableSurfaces,
     boardSurfaces,
+    homeSurfaces,
     onOpenPalette: () => setPaletteOpen(true),
     onSignOut: signOut,
   };
@@ -675,6 +701,15 @@ export default function DashboardPage() {
               <HomeView me={me} plugins={plugins} objects={objects} surfaces={surfaces} setView={setView} />
             )}
             {view.kind === "chat" && <ChatView me={me} onChanged={refresh} />}
+            {view.kind === "apphome" && (
+              <AppHomeView
+                label={view.label}
+                icon={view.icon}
+                objects={view.objects}
+                allObjects={objects}
+                setView={setView}
+              />
+            )}
             {view.kind === "plugins" && <PluginsView plugins={plugins} onChanged={refresh} />}
             {view.kind === "marketplace" && <MarketplaceView onChanged={refresh} />}
             {view.kind === "events" && <EventsView />}
@@ -2116,7 +2151,7 @@ function KanbanView({
   );
 }
 
-/* ---------------- AI (BYOK keys + agent chat) ---------------- */
+/* ---------------- AI (BYOK keys only — agent chat moved to the Chat view) ---------------- */
 
 function AiView({ onChanged }: { onChanged: () => Promise<void> }) {
   const [keys, setKeys] = useState<AiKeyInfo[]>([]);
@@ -2124,18 +2159,6 @@ function AiView({ onChanged }: { onChanged: () => Promise<void> }) {
   const [form, setForm] = useState({ name: "", base_url: "", model: "", api_key: "", is_default: true });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-
-  // chat state
-  const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string; trace?: ChatResult["trace"] }[]>([]);
-  const [input, setInput] = useState("");
-  const [chatBusy, setChatBusy] = useState(false);
-  const [chatError, setChatError] = useState("");
-  const chatEndRef = useRef<HTMLDivElement>(null);
-
-  // auto-scroll to newest message
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, chatBusy]);
 
   const loadKeys = useCallback(async () => {
     setKeys(await api<AiKeyInfo[]>("/api/ai/keys"));
@@ -2154,6 +2177,7 @@ function AiView({ onChanged }: { onChanged: () => Promise<void> }) {
       setShowAdd(false);
       setForm({ name: "", base_url: "", model: "", api_key: "", is_default: true });
       await loadKeys();
+      await onChanged();
     } catch (err) {
       const d = (err as { detail?: unknown }).detail;
       setError(typeof d === "string" ? d : JSON.stringify(d));
@@ -2165,184 +2189,74 @@ function AiView({ onChanged }: { onChanged: () => Promise<void> }) {
   async function removeKey(id: string) {
     await api(`/api/ai/keys/${id}`, { method: "DELETE" });
     await loadKeys();
-  }
-
-  async function send(e: React.FormEvent) {
-    e.preventDefault();
-    if (!input.trim() || chatBusy) return;
-    const userMsg = input.trim();
-    setInput("");
-    setChatError("");
-    setMessages((m) => [...m, { role: "user", content: userMsg }]);
-    setChatBusy(true);
-    try {
-      const history = messages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
-      const res = await api<ChatResult>("/api/ai/chat", {
-        method: "POST",
-        body: { message: userMsg, history },
-      });
-      setMessages((m) => [...m, { role: "assistant", content: res.reply, trace: res.trace }]);
-      await onChanged();
-    } catch (err) {
-      const d = (err as { detail?: unknown }).detail;
-      setChatError(typeof d === "string" ? d : JSON.stringify(d));
-      setMessages((m) => m.slice(0, -1)); // drop the user msg on failure
-    } finally {
-      setChatBusy(false);
-    }
+    await onChanged();
   }
 
   const inputCls =
     "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent";
 
   return (
-    <div className="space-y-6">
-    <div className="grid gap-6 lg:grid-cols-2">
-      {/* Keys manager */}
-      <div>
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold">🔑 AI Keys</h1>
-          <button
-            onClick={() => setShowAdd((v) => !v)}
-            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
-          >
-            {showAdd ? "Close" : "+ Add key"}
+    <div className="mx-auto max-w-3xl">
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">🔑 AI Keys</h1>
+        <button
+          onClick={() => setShowAdd((v) => !v)}
+          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
+        >
+          {showAdd ? "Close" : "+ Add key"}
+        </button>
+      </div>
+      <p className="mt-1 text-sm text-muted">
+        Bring your own AI provider. Keys power the Chat agent and your AI employees.
+        For the conversational control surface, use the <strong>Chat</strong> view.
+      </p>
+
+      {showAdd && (
+        <form onSubmit={addKey} className="mt-4 space-y-3 rounded-xl border border-border bg-card p-4">
+          <input className={inputCls} placeholder="Name (e.g. deepseek)" value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+          <input className={inputCls} placeholder="Base URL (e.g. https://api.deepseek.com/v1)" value={form.base_url}
+            onChange={(e) => setForm({ ...form, base_url: e.target.value })} required />
+          <input className={inputCls} placeholder="Model (e.g. deepseek-chat)" value={form.model}
+            onChange={(e) => setForm({ ...form, model: e.target.value })} required />
+          <input className={inputCls} type="password" placeholder="API key" value={form.api_key}
+            onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
+          <label className="flex items-center gap-2 text-xs text-muted">
+            <input type="checkbox" checked={form.is_default}
+              onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />
+            Default key
+          </label>
+          {error && <div className="text-xs text-danger">{error}</div>}
+          <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+            {busy ? "…" : "Save key"}
           </button>
-        </div>
-        <p className="mt-1 text-sm text-muted">
-          Bring your own model. Any OpenAI-compatible endpoint works — DeepSeek, OpenRouter,
-          Groq, Together, Ollama, vLLM, OpenAI. Keys are encrypted at rest and never shown again.
-        </p>
+        </form>
+      )}
 
-        {showAdd && (
-          <form onSubmit={addKey} className="mt-4 space-y-3 rounded-xl border border-border bg-card p-4">
-            <input className={inputCls} placeholder="Name (e.g. deepseek)" value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-            <input className={inputCls} placeholder="Base URL (e.g. https://api.deepseek.com/v1)" value={form.base_url}
-              onChange={(e) => setForm({ ...form, base_url: e.target.value })} required />
-            <input className={inputCls} placeholder="Model (e.g. deepseek-chat)" value={form.model}
-              onChange={(e) => setForm({ ...form, model: e.target.value })} required />
-            <input className={inputCls} type="password" placeholder="API key" value={form.api_key}
-              onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
-            <label className="flex items-center gap-2 text-xs text-muted">
-              <input type="checkbox" checked={form.is_default}
-                onChange={(e) => setForm({ ...form, is_default: e.target.checked })} />
-              Default key
-            </label>
-            {error && <div className="text-xs text-danger">{error}</div>}
-            <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
-              {busy ? "…" : "Save key"}
+      <div className="mt-4 space-y-2">
+        {keys.map((k) => (
+          <div key={k.id} className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                {k.name}
+                {k.is_default && <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] text-success">default</span>}
+              </div>
+              <div className="truncate text-xs text-muted">
+                {k.model} · {k.base_url}
+                {k.api_key_masked && <span className="ml-2 font-mono">{k.api_key_masked}</span>}
+              </div>
+            </div>
+            <button onClick={() => removeKey(k.id)} className="ml-3 text-xs text-muted hover:text-danger">
+              delete
             </button>
-          </form>
-        )}
-
-        <div className="mt-4 space-y-2">
-          {keys.map((k) => (
-            <div key={k.id} className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  {k.name}
-                  {k.is_default && <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] text-success">default</span>}
-                </div>
-                <div className="truncate text-xs text-muted">
-                  {k.model} · {k.base_url}
-                  {k.api_key_masked && <span className="ml-2 font-mono">{k.api_key_masked}</span>}
-                </div>
-              </div>
-              <button onClick={() => removeKey(k.id)} className="ml-3 text-xs text-muted hover:text-danger">
-                delete
-              </button>
-            </div>
-          ))}
-          {keys.length === 0 && !showAdd && (
-            <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
-              No AI keys yet. Add one to unlock the agent.
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Agent chat */}
-      <div className="flex flex-col">
-        <h1 className="text-xl font-bold">🤖 Agent</h1>
-        <p className="mt-1 text-sm text-muted">
-          Talks to your enabled plugins&apos; tools under your permissions. Try:
-          &ldquo;create a lead named Sam from Referral&rdquo; or &ldquo;search contacts for Jane&rdquo;.
-        </p>
-
-        <div className="mt-4 flex min-h-[320px] flex-1 flex-col rounded-xl border border-border bg-card">
-          <div className="flex-1 space-y-3 overflow-y-auto p-4">
-            {messages.map((m, i) => (
-              <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div
-                  className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
-                    m.role === "user" ? "bg-accent text-on-accent" : "bg-background border border-border"
-                  }`}
-                >
-                  <div className="whitespace-pre-wrap">{m.content}</div>
-                  {m.trace && m.trace.length > 0 && (
-                    <div className="mt-2 space-y-1 border-t border-border pt-2">
-                      {m.trace.map((t, j) => (
-                        <div key={j} className="text-[11px] text-muted">
-                          <span className="font-mono text-accent">🔧 {t.tool}</span>{" "}
-                          {t.result.error ? (
-                            <span className="text-danger">→ {String(t.result.error)}</span>
-                          ) : (
-                            <span className="text-success">→ ok</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-            {chatBusy && (
-              <div className="flex items-center gap-2 text-xs text-muted">
-                <span className="inline-block h-3 w-3 animate-spin rounded-full border border-accent border-t-transparent" />
-                Agent thinking…
-              </div>
-            )}
-            {chatError && <div className="text-xs text-danger">{chatError}</div>}
-            {messages.length === 0 && !chatBusy && (
-              <div className="pt-8 text-center">
-                <p className="text-sm text-muted">Ask the agent to work with your data.</p>
-                <div className="mt-3 flex flex-wrap justify-center gap-1.5">
-                  {["Create a lead named Sam from Referral", "How many deals are in Negotiation?", "List open tickets"].map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => setInput(s)}
-                      className="rounded-full border border-border px-2.5 py-1 text-xs text-muted transition hover:border-border-strong hover:text-foreground"
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            <div ref={chatEndRef} />
           </div>
-
-          <form onSubmit={send} className="flex gap-2 border-t border-border p-3">
-            <input
-              className={inputCls}
-              placeholder={keys.length === 0 ? "Add an AI key first…" : "Ask the agent…"}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              disabled={keys.length === 0 || chatBusy}
-            />
-            <button
-              disabled={keys.length === 0 || chatBusy || !input.trim()}
-              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-40"
-            >
-              Send
-            </button>
-          </form>
-        </div>
+        ))}
+        {keys.length === 0 && !showAdd && (
+          <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+            No AI keys yet. Add one to unlock the Chat agent and AI employees.
+          </div>
+        )}
       </div>
-    </div>
-
-    <ApiAccessPanel />
     </div>
   );
 }
@@ -4216,6 +4130,184 @@ function AutopilotView({ onChanged }: { onChanged: () => Promise<void> }) {
   );
 }
 
+/* ---------------- Phase G: App Home — polished per-plugin landing page ---------------- */
+
+function AppHomeView({
+  label,
+  icon,
+  objects,
+  allObjects,
+  setView,
+}: {
+  label: string;
+  icon: string;
+  objects: string[];
+  allObjects: ObjectDef[];
+  setView: (v: View) => void;
+}) {
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [pipeline, setPipeline] = useState<{ key: string; value: number }[]>([]);
+  const [pipelineTotal, setPipelineTotal] = useState(0);
+  const [recent, setRecent] = useState<Record<string, RecordRow[]>>({});
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    (async () => {
+      try {
+        const countPromises = objects.map(async (slug) => {
+          try {
+            const res = await api<AnalyticsResult>("/api/insights/query", {
+              method: "POST",
+              body: { object: slug, metric: "count" },
+            });
+            return [slug, res.value ?? 0] as const;
+          } catch {
+            return [slug, 0] as const;
+          }
+        });
+        const recentPromises = objects.map(async (slug) => {
+          try {
+            const res = await api<{ items: RecordRow[] }>(`/api/records/${slug}?limit=5`);
+            return [slug, res.items] as const;
+          } catch {
+            return [slug, []] as const;
+          }
+        });
+
+        const [countResults, recentResults] = await Promise.all([
+          Promise.all(countPromises),
+          Promise.all(recentPromises),
+        ]);
+        setCounts(Object.fromEntries(countResults));
+        setRecent(Object.fromEntries(recentResults));
+
+        // Pipeline breakdown for deals
+        if (objects.includes("deal")) {
+          try {
+            const res = await api<AnalyticsResult>("/api/insights/query", {
+              method: "POST",
+              body: { object: "deal", metric: "group_by", field: "stage", value_field: "amount" },
+            });
+            const rows = (res.rows ?? [])
+              .filter((r) => r.key !== undefined)
+              .map((r) => ({ key: r.key as string, value: r.value ?? 0 }));
+            setPipeline(rows);
+            setPipelineTotal(rows.reduce((s, r) => s + r.value, 0));
+          } catch {
+            setPipeline([]);
+          }
+        }
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [objects]);
+
+  const objDef = (slug: string) => allObjects.find((o) => o.slug === slug);
+  const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+  const fmtMoney = (n: number) => `$${n >= 1000 ? `${(n / 1000).toFixed(1)}k` : n.toFixed(0)}`;
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <div className="skeleton h-8 w-48" />
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => <div key={i} className="skeleton h-20" />)}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* header */}
+      <div className="flex items-center gap-3">
+        <span className="text-3xl">{icon}</span>
+        <div>
+          <h1 className="text-xl font-bold">{label}</h1>
+          <p className="text-sm text-muted">Your {label.toLowerCase()} workspace at a glance.</p>
+        </div>
+      </div>
+
+      {/* stat cards — one per object */}
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {objects.map((slug) => {
+          const def = objDef(slug);
+          return (
+            <button
+              key={slug}
+              onClick={() => setView({ kind: "object", slug })}
+              className="flex items-center gap-3 rounded-xl border border-border bg-card p-4 text-left transition hover:border-accent/40 hover:shadow-sm"
+            >
+              <span className="text-xl">{def?.icon || "📄"}</span>
+              <div>
+                <div className="text-2xl font-bold leading-none">{fmt(counts[slug] ?? 0)}</div>
+                <div className="mt-1 text-xs text-muted">{def?.name_plural || slug}</div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* pipeline breakdown (deals) */}
+      {objects.includes("deal") && pipeline.length > 0 && (
+        <section className="mt-6 rounded-xl border border-border bg-card p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">💰 Pipeline by Stage</h2>
+            <span className="text-sm font-bold text-accent">{fmtMoney(pipelineTotal)} total</span>
+          </div>
+          <div className="mt-3 space-y-2">
+            {pipeline.map((p) => {
+              const pct = pipelineTotal > 0 ? Math.round((p.value / pipelineTotal) * 100) : 0;
+              return (
+                <div key={p.key} className="flex items-center gap-3">
+                  <span className="w-24 shrink-0 text-xs text-muted">{p.key}</span>
+                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-border">
+                    <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                  <span className="w-16 shrink-0 text-right text-xs font-medium">{fmtMoney(p.value)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* recent records per object */}
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        {objects.map((slug) => {
+          const def = objDef(slug);
+          const rows = recent[slug] ?? [];
+          if (rows.length === 0) return null;
+          const titleField = def?.fields?.[0]?.slug ?? "name";
+          return (
+            <section key={slug} className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold">{def?.icon} Recent {def?.name_plural || slug}</h2>
+                <button
+                  onClick={() => setView({ kind: "object", slug })}
+                  className="text-xs text-accent hover:underline"
+                >
+                  View all →
+                </button>
+              </div>
+              <div className="mt-3 space-y-1.5">
+                {rows.map((r) => (
+                  <div key={r.id} className="flex items-center justify-between rounded-lg border border-border bg-card-2 px-3 py-2">
+                    <span className="truncate text-sm font-medium">{String(r.data[titleField] ?? r.id.slice(0, 8))}</span>
+                    <span className="ml-2 shrink-0 text-[11px] text-muted">
+                      {r.created_at ? new Date(r.created_at).toLocaleDateString() : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- Phase F: AI Employees hub dashboard ---------------- */
 
 function AiHubView({ onChanged }: { onChanged: () => Promise<void> }) {
@@ -4607,6 +4699,33 @@ const stats = await truss.insights.query({ object: "deal", metric: "sum", field:
         <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-background p-3 text-[11px] leading-relaxed text-muted">
           {reference || "Loading…"}
         </pre>
+      </div>
+
+      {/* API keys — programmatic access */}
+      <ApiAccessPanel />
+
+      {/* Developer settings */}
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h2 className="text-sm font-semibold">Developer settings</h2>
+        <p className="mt-1 text-xs text-muted">Endpoints and environment for building against this workspace.</p>
+        <div className="mt-3 space-y-2 text-xs">
+          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+            <span className="text-muted">Kernel API base</span>
+            <code className="font-mono text-foreground">{API_BASE}</code>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+            <span className="text-muted">Interactive docs</span>
+            <a href={`${API_BASE}/docs`} target="_blank" rel="noreferrer" className="font-mono text-accent hover:underline">{API_BASE}/docs</a>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+            <span className="text-muted">OpenAPI spec</span>
+            <a href={`${API_BASE}/api/dev/openapi.json`} target="_blank" rel="noreferrer" className="font-mono text-accent hover:underline">{API_BASE}/api/dev/openapi.json</a>
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+            <span className="text-muted">Auth</span>
+            <span className="text-muted">Bearer token via <code className="font-mono text-foreground">/api/auth/login</code> or an API key below</span>
+          </div>
+        </div>
       </div>
     </div>
   );

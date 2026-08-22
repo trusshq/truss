@@ -40,6 +40,7 @@ SUITES = [
     "insights_smoke_test.py",
     "devplatform_smoke_test.py",
     "chatcontrol_smoke_test.py",
+    "crm_app_smoke_test.py",
 ]
 
 

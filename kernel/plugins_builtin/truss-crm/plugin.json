@@ -64,6 +64,22 @@
         { "slug": "close_date", "name": "Expected Close", "type": "date", "position": 4 },
         { "slug": "notes", "name": "Notes", "type": "textarea", "position": 5 }
       ]
+    },
+    {
+      "slug": "activity",
+      "name": "Activity",
+      "name_plural": "Activities",
+      "description": "Timeline of calls, emails, meetings, and notes across your CRM",
+      "icon": "📋",
+      "fields": [
+        { "slug": "subject", "name": "Subject", "type": "text", "required": true, "position": 0 },
+        { "slug": "type", "name": "Type", "type": "select", "required": true, "position": 1, "options": { "choices": ["Call", "Email", "Meeting", "Note", "Task"] } },
+        { "slug": "contact", "name": "Contact", "type": "relation", "position": 2, "options": { "related_object": "contact" } },
+        { "slug": "deal", "name": "Deal", "type": "relation", "position": 3, "options": { "related_object": "deal" } },
+        { "slug": "due_date", "name": "Due Date", "type": "date", "position": 4 },
+        { "slug": "done", "name": "Done", "type": "boolean", "position": 5 },
+        { "slug": "notes", "name": "Notes", "type": "textarea", "position": 6 }
+      ]
     }
   ],
   "tools": [
@@ -99,6 +115,18 @@
       "params": [
         { "name": "search", "type": "string", "description": "Search text" }
       ]
+    },
+    {
+      "slug": "log_activity",
+      "name": "Log Activity",
+      "description": "Log a call, email, meeting, note, or task against a contact or deal",
+      "action": "create_record",
+      "object": "activity",
+      "params": [
+        { "name": "subject", "type": "string", "description": "Activity subject", "required": true },
+        { "name": "type", "type": "string", "description": "Call, Email, Meeting, Note, or Task", "required": true },
+        { "name": "notes", "type": "string", "description": "Details" }
+      ]
     }
   ],
   "automations": [
@@ -116,6 +144,7 @@
     { "slug": "leads-table", "label": "Leads", "icon": "🎯", "view": "table", "object": "lead" },
     { "slug": "deals-kanban", "label": "Pipeline", "icon": "💰", "view": "kanban", "object": "deal", "config": { "group_by": "stage" } },
     { "slug": "contacts-table", "label": "Contacts", "icon": "👤", "view": "table", "object": "contact" },
-    { "slug": "companies-table", "label": "Companies", "icon": "🏢", "view": "table", "object": "company" }
+    { "slug": "companies-table", "label": "Companies", "icon": "🏢", "view": "table", "object": "company" },
+    { "slug": "activities-table", "label": "Activities", "icon": "📋", "view": "table", "object": "activity" }
   ]
 }

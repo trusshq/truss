@@ -109,7 +109,7 @@ export interface PluginInfo {
   objects: { slug: string; name: string }[];
   tools: { slug: string; name: string; description: string }[];
   automations: { slug: string; name: string }[];
-  ui: { slug: string; label: string; icon: string; view: string; object?: string; config?: { group_by?: string } }[];
+  ui: { slug: string; label: string; icon: string; view: string; object?: string; config?: { group_by?: string; objects?: string[] } }[];
   installed: boolean;
   enabled: boolean;
   settings: Record<string, unknown>;
