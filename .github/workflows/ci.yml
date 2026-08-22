@@ -59,9 +59,16 @@ jobs:
         # Start uvicorn as a REAL background process in THIS step (so it isn't
         # torn down between steps) with its genuine stdout/stderr in kernel.log.
         # Then run the suites against it. Everything on 127.0.0.1, same host.
+        # On failure we emit kernel.log as ::error:: annotations because the
+        # step log + artifacts are auth-gated but annotations are public.
         run: |
           set +e
-          .venv/bin/uvicorn truss_kernel.main:app --host 127.0.0.1 --port 8000 > kernel.log 2>&1 &
+
+          echo "== preflight: DB reachability =="
+          .venv/bin/python -c "import socket; s=socket.create_connection(('127.0.0.1',5432),timeout=5); s.close(); print('DB TCP 127.0.0.1:5432 OK')" || echo "::error::DB TCP connect to 127.0.0.1:5432 FAILED"
+
+          echo "== starting kernel =="
+          .venv/bin/python -m uvicorn truss_kernel.main:app --host 127.0.0.1 --port 8000 > kernel.log 2>&1 &
           KERNEL_PID=$!
           echo "kernel started (pid $KERNEL_PID)"
 
@@ -72,6 +79,11 @@ jobs:
               echo "kernel healthy after ${i}s"
               break
             fi
+            # surface an early crash immediately
+            if ! kill -0 $KERNEL_PID 2>/dev/null; then
+              echo "::error::kernel process exited early"
+              break
+            fi
             sleep 1
           done
 
@@ -79,6 +91,10 @@ jobs:
             echo "::error::kernel did not become healthy in 60s"
             echo "--- kernel.log (last 80 lines) ---"
             tail -n 80 kernel.log
+            # Emit the log as public annotations (step logs are auth-gated).
+            tail -n 30 kernel.log | while IFS= read -r line; do
+              echo "::error::LOG: $line"
+            done
             exit 1
           fi
 
