@@ -7,9 +7,9 @@ Environment:
     TRUSS_TEST_BASE          kernel URL   (default http://127.0.0.1:8000)
     TRUSS_TEST_AI_BASE       mock AI URL  (default http://127.0.0.1:9999/v1)
     TRUSS_TEST_WEBHOOK_RX    mock webhook (default http://127.0.0.1:9998)
-    TRUSS_TEST_SPAWN_KERNEL  "1" = spawn the kernel ourselves (CI mode: keeps
-                             it alive in-process, immune to step/process-group
-                             teardown between shell steps)
+    TRUSS_TEST_SPAWN_KERNEL  "1" = run the kernel in-process on a daemon thread
+                             (CI mode: no subprocess lifecycle, immune to
+                             process-group teardown between shell steps)
 
 Exits non-zero if any suite fails.
 """
@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -47,23 +48,42 @@ def wait_for_kernel(timeout: int = 90) -> bool:
     return False
 
 
+def start_kernel_in_thread(port: int) -> None:
+    """Run uvicorn in a daemon thread. Any startup error is captured and
+    re-raised in the main thread so CI sees it immediately."""
+    import uvicorn
+
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            uvicorn.run(
+                "truss_kernel.main:app",
+                host="127.0.0.1",
+                port=port,
+                log_level="info",
+            )
+        except BaseException as e:  # noqa: BLE001 — surface ANY startup failure
+            errors.append(e)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+
+    # Give the thread a moment to fail fast (bad import/config), then let the
+    # health poll below do the real waiting.
+    time.sleep(2)
+    if errors:
+        raise RuntimeError(f"kernel failed to start: {errors[0]!r}") from errors[0]
+    print(f"Kernel thread started on port {port}", flush=True)
+
+
 def main() -> int:
     procs = []
 
-    # Optionally spawn the kernel in-process (CI mode). Using the venv's
-    # uvicorn directly avoids `uv run` reinstalling the non-installable
-    # local package.
+    # Optionally run the kernel in-process (CI mode).
     if os.environ.get("TRUSS_TEST_SPAWN_KERNEL") == "1":
-        venv_uv = os.path.join(HERE, ".venv", "bin", "uvicorn")
-        if os.name == "nt":
-            venv_uv = os.path.join(HERE, ".venv", "Scripts", "uvicorn.exe")
-        port = BASE.rsplit(":", 1)[-1].split("/", 1)[0]
-        kernel_log = open(os.path.join(HERE, "kernel.log"), "w")
-        procs.append(subprocess.Popen(
-            [venv_uv, "truss_kernel.main:app", "--host", "127.0.0.1", "--port", port],
-            cwd=HERE, stdout=kernel_log, stderr=subprocess.STDOUT,
-        ))
-        print(f"Spawned kernel (port {port}), log: kernel.log", flush=True)
+        port = int(BASE.rsplit(":", 1)[-1].split("/", 1)[0])
+        start_kernel_in_thread(port)
 
     # Boot mock servers (stdlib http.server, quiet logs)
     procs += [
