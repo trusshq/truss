@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Activity,
+  Bell,
   Bot,
   Boxes,
   Cable,
@@ -12,11 +13,13 @@ import {
   ChevronLeft,
   ChevronRight,
   Cog,
+  Coins,
   Command,
   Copy,
   Database,
   History,
   Home,
+  Inbox,
   Info,
   Kanban,
   LayoutGrid,
@@ -24,6 +27,7 @@ import {
   Menu,
   Monitor,
   Moon,
+  Network,
   Palette,
   Pencil,
   Plug,
@@ -33,6 +37,7 @@ import {
   Shield,
   Store,
   Sun,
+  Target,
   Trash2,
   UserCircle,
   UserPlus,
@@ -50,7 +55,13 @@ import {
   type AgentTaskInfo,
   type AiKeyInfo,
   type ApiKeyInfo,
+  type BudgetLedger,
+  type GoalInfo,
   type HistoryEntry,
+  type NotificationInfo,
+  type OrgNode,
+  type ReviewInbox,
+  type TaskCommentInfo,
   type TrashItem,
   type ChatResult,
   type Invite,
@@ -75,6 +86,9 @@ type View =
   | { kind: "events" }
   | { kind: "ai" }
   | { kind: "agents" }
+  | { kind: "org" }
+  | { kind: "goals" }
+  | { kind: "review" }
   | { kind: "automations" }
   | { kind: "connectors" }
   | { kind: "settings" }
@@ -327,6 +341,9 @@ function SidebarContent({
             <NavItem active={view.kind === "ai"} onClick={() => go({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
           )}
           <NavItem active={view.kind === "agents"} onClick={() => go({ kind: "agents" })} icon={<Users size={15} />} label="AI Employees" />
+          <NavItem active={view.kind === "org"} onClick={() => go({ kind: "org" })} icon={<Network size={15} />} label="Org Chart" />
+          <NavItem active={view.kind === "goals"} onClick={() => go({ kind: "goals" })} icon={<Target size={15} />} label="Goals" />
+          <NavItem active={view.kind === "review"} onClick={() => go({ kind: "review" })} icon={<Inbox size={15} />} label="Review Inbox" />
           <NavItem active={view.kind === "automations"} onClick={() => go({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
           {me.role !== "viewer" && (
             <NavItem active={view.kind === "connectors"} onClick={() => go({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
@@ -358,6 +375,7 @@ function SidebarContent({
             <div className="truncate text-xs font-medium">{me.full_name || me.email}</div>
             <div className="truncate text-[10px] text-muted">{me.email}</div>
           </div>
+          <NotificationsBell />
           <button
             onClick={onSignOut}
             title="Sign out"
@@ -598,6 +616,9 @@ export default function DashboardPage() {
             {view.kind === "events" && <EventsView />}
             {view.kind === "ai" && <AiView onChanged={refresh} />}
             {view.kind === "agents" && <AgentsView onChanged={refresh} />}
+            {view.kind === "org" && <OrgView onChanged={refresh} />}
+            {view.kind === "goals" && <GoalsView onChanged={refresh} />}
+            {view.kind === "review" && <ReviewView onChanged={refresh} />}
             {view.kind === "automations" && <AutomationsView />}
             {view.kind === "connectors" && <ConnectorsView />}
             {view.kind === "settings" && <SettingsView />}
@@ -3054,6 +3075,582 @@ interface AutomationRule {
   object: string | null;
   condition: Record<string, unknown>;
   actions: Record<string, unknown>[];
+}
+
+/* ---------------- Phase B: Notifications bell ---------------- */
+
+function NotificationsBell() {
+  const [unread, setUnread] = useState(0);
+  const [open, setOpen] = useState(false);
+  const [items, setItems] = useState<NotificationInfo[]>([]);
+
+  const poll = useCallback(async () => {
+    try {
+      const res = await api<{ items: NotificationInfo[]; unread_count: number }>("/api/org/notifications?limit=12");
+      setItems(res.items);
+      setUnread(res.unread_count);
+    } catch {
+      /* not logged in yet */
+    }
+  }, []);
+
+  useEffect(() => {
+    poll();
+    const t = setInterval(poll, 30000);
+    return () => clearInterval(t);
+  }, [poll]);
+
+  async function markRead(n: NotificationInfo) {
+    try {
+      await api(`/api/org/notifications/${n.id}/read`, { method: "POST" });
+      await poll();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function readAll() {
+    try {
+      await api("/api/org/notifications/read-all", { method: "POST" });
+      await poll();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => {
+          setOpen((v) => !v);
+          if (!open) poll();
+        }}
+        title="Notifications"
+        className="relative shrink-0 rounded-md p-1.5 text-muted transition hover:bg-accent-soft hover:text-accent"
+      >
+        <Bell size={14} />
+        {unread > 0 && (
+          <span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-danger px-0.5 text-[8px] font-bold text-white">
+            {unread > 9 ? "9+" : unread}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="absolute bottom-10 left-0 z-30 w-80 rounded-xl border border-border bg-card p-2 shadow-xl">
+          <div className="flex items-center justify-between px-2 py-1">
+            <span className="text-xs font-semibold">Notifications</span>
+            {unread > 0 && (
+              <button onClick={readAll} className="text-[10px] text-accent hover:underline">
+                Mark all read
+              </button>
+            )}
+          </div>
+          <div className="mt-1 max-h-72 space-y-1 overflow-y-auto">
+            {items.length === 0 && (
+              <div className="px-2 py-4 text-center text-xs text-muted">No notifications yet.</div>
+            )}
+            {items.map((n) => (
+              <button
+                key={n.id}
+                onClick={() => !n.read && markRead(n)}
+                className={`block w-full rounded-lg px-2 py-1.5 text-left transition ${n.read ? "opacity-60" : "hover:bg-background"}`}
+              >
+                <div className="flex items-center gap-1.5">
+                  {!n.read && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />}
+                  <span className="truncate text-xs font-medium">{n.title}</span>
+                </div>
+                {n.body && <div className="mt-0.5 line-clamp-2 text-[10px] text-muted">{n.body}</div>}
+                <div className="mt-0.5 text-[9px] text-faint">
+                  {n.actor_type === "agent" ? "🤖 " : ""}
+                  {n.created_at ? new Date(n.created_at).toLocaleString() : ""}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Phase B: Org Chart ---------------- */
+
+function OrgView({ onChanged }: { onChanged: () => Promise<void> }) {
+  const [tree, setTree] = useState<OrgNode[]>([]);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [budget, setBudget] = useState<BudgetLedger | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [assignFor, setAssignFor] = useState<string | null>(null);
+  const [managerPick, setManagerPick] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [t, a, b] = await Promise.all([
+        api<OrgNode[]>("/api/org/tree"),
+        api<AgentInfo[]>("/api/agents"),
+        api<BudgetLedger>("/api/org/budget"),
+      ]);
+      setTree(t);
+      setAgents(a);
+      setBudget(b);
+    } catch {
+      /* boot may race */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function setManager(agentId: string) {
+    const body: Record<string, unknown> = {};
+    if (managerPick === "") {
+      body.reports_to_agent_id = null;
+      body.reports_to_user_id = null;
+    } else if (managerPick === "me") {
+      body.reports_to_user_id = "me";
+    } else {
+      body.reports_to_agent_id = managerPick;
+    }
+    try {
+      if (managerPick === "me") {
+        // resolve current user id via /api/auth/me
+        const me = await api<{ id?: string; user_id?: string }>("/api/auth/me");
+        body.reports_to_user_id = me.id ?? me.user_id;
+        delete body.reports_to_agent_id;
+      }
+      await api(`/api/agents/${agentId}`, { method: "PATCH", body });
+      toast("Reporting line updated", "success");
+      setAssignFor(null);
+      setManagerPick("");
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Update failed", "error");
+    }
+  }
+
+  function NodeCard({ node, depth }: { node: OrgNode; depth: number }) {
+    const row = budget?.agents.find((a) => a.agent_id === node.id);
+    return (
+      <div style={{ marginLeft: depth * 24 }}>
+        <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
+          <span className="text-xl">{node.icon}</span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-sm font-semibold">{node.name}</span>
+              <span
+                className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                  node.status === "active"
+                    ? "bg-success/15 text-success"
+                    : node.status === "paused"
+                      ? "bg-warning/15 text-warning"
+                      : "bg-danger/15 text-danger"
+                }`}
+              >
+                {node.status}
+              </span>
+            </div>
+            <div className="text-[11px] text-muted">
+              {node.role || "—"}
+              {row && row.budget_tokens > 0 && (
+                <span className="ml-2">
+                  · {row.tokens_used.toLocaleString()}/{row.budget_tokens.toLocaleString()} tokens
+                </span>
+              )}
+              {node.manager_name && <span className="ml-2">· reports to {node.manager_name} (human)</span>}
+            </div>
+          </div>
+          <div className="relative">
+            <button
+              onClick={() => {
+                setAssignFor(assignFor === node.id ? null : node.id);
+                setManagerPick(node.reports_to_agent ?? "");
+              }}
+              className="rounded-md border border-border px-2 py-1 text-[11px] text-muted transition hover:border-border-strong hover:text-foreground"
+            >
+              Manager
+            </button>
+            {assignFor === node.id && (
+              <div className="absolute right-0 z-20 mt-1 w-52 rounded-xl border border-border bg-card p-2 shadow-lg">
+                <select
+                  className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs outline-none"
+                  value={managerPick}
+                  onChange={(e) => setManagerPick(e.target.value)}
+                >
+                  <option value="">— no manager (top level) —</option>
+                  <option value="me">👤 Me (human)</option>
+                  {agents
+                    .filter((a) => a.id !== node.id && a.status !== "terminated")
+                    .map((a) => (
+                      <option key={a.id} value={a.id}>
+                        {a.icon} {a.name}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  onClick={() => setManager(node.id)}
+                  className="mt-2 w-full rounded-lg bg-accent px-2 py-1.5 text-xs font-semibold text-on-accent transition hover:brightness-110"
+                >
+                  Save
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+        {node.children.length > 0 && (
+          <div className="mt-2 space-y-2 border-l border-border pl-3">
+            {node.children.map((c) => (
+              <NodeCard key={c.id} node={c} depth={0} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold">Org Chart</h1>
+          <p className="mt-0.5 text-xs text-muted">
+            Your AI team&apos;s reporting structure. Managers can delegate tasks to direct reports.
+          </p>
+        </div>
+        {budget && (
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs">
+            <Coins size={13} className="text-accent" />
+            <span className="text-muted">
+              {budget.total_tokens_used.toLocaleString()} tokens used
+              {budget.total_budget > 0 && ` / ${budget.total_budget.toLocaleString()} budgeted`}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="mt-6 space-y-2">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="skeleton h-16 w-full rounded-xl" />
+          ))}
+        </div>
+      ) : tree.length === 0 ? (
+        <div className="mt-6 rounded-xl border border-dashed border-border p-8 text-center">
+          <Network size={24} className="mx-auto text-faint" />
+          <p className="mt-2 text-sm text-muted">No AI employees yet — hire some to build your org.</p>
+        </div>
+      ) : (
+        <div className="mt-6 space-y-3">
+          {tree.map((n) => (
+            <NodeCard key={n.id} node={n} depth={0} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Phase B: Goals ---------------- */
+
+function GoalsView({ onChanged }: { onChanged: () => Promise<void> }) {
+  const [goals, setGoals] = useState<GoalInfo[]>([]);
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ title: "", metric: "", target_value: "", unit: "", owner_agent_id: "", parent_goal_id: "" });
+
+  const load = useCallback(async () => {
+    try {
+      const [g, a] = await Promise.all([api<GoalInfo[]>("/api/org/goals"), api<AgentInfo[]>("/api/agents")]);
+      setGoals(g);
+      setAgents(a);
+    } catch {
+      /* boot race */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function create(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api("/api/org/goals", {
+        method: "POST",
+        body: {
+          title: form.title,
+          metric: form.metric,
+          target_value: parseFloat(form.target_value) || 0,
+          unit: form.unit,
+          owner_agent_id: form.owner_agent_id || null,
+          parent_goal_id: form.parent_goal_id || null,
+        },
+      });
+      toast("Goal created", "success");
+      setShowForm(false);
+      setForm({ title: "", metric: "", target_value: "", unit: "", owner_agent_id: "", parent_goal_id: "" });
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function bump(g: GoalInfo, delta: number) {
+    try {
+      await api(`/api/org/goals/${g.id}`, {
+        method: "PATCH",
+        body: { current_value: Math.max(0, g.current_value + delta) },
+      });
+      await load();
+      await onChanged();
+    } catch {
+      toast("Update failed", "error");
+    }
+  }
+
+  const agentName = (id: string | null) => agents.find((a) => a.id === id)?.name ?? "You";
+  const topLevel = goals.filter((g) => !g.parent_goal_id);
+  const childrenOf = (id: string) => goals.filter((g) => g.parent_goal_id === id);
+
+  const input = "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition focus:border-accent";
+
+  return (
+    <div className="mx-auto max-w-4xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-bold">Goals</h1>
+          <p className="mt-0.5 text-xs text-muted">
+            Measurable objectives for your AI team. Sub-goals roll progress up to their parent.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowForm((v) => !v)}
+          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
+        >
+          {showForm ? "Cancel" : "+ New goal"}
+        </button>
+      </div>
+
+      {showForm && (
+        <form onSubmit={create} className="mt-4 grid gap-3 rounded-xl border border-border bg-card p-4 md:grid-cols-2">
+          <label className="block text-xs md:col-span-2">
+            <span className="mb-1 block text-muted">Title *</span>
+            <input className={input} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Metric</span>
+            <input className={input} placeholder="meetings" value={form.metric} onChange={(e) => setForm({ ...form, metric: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Target</span>
+            <input className={input} type="number" min="0" step="any" value={form.target_value} onChange={(e) => setForm({ ...form, target_value: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Unit</span>
+            <input className={input} placeholder="meetings" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} />
+          </label>
+          <label className="block text-xs">
+            <span className="mb-1 block text-muted">Owner</span>
+            <select className={input} value={form.owner_agent_id} onChange={(e) => setForm({ ...form, owner_agent_id: e.target.value })}>
+              <option value="">👤 Me</option>
+              {agents.filter((a) => a.status !== "terminated").map((a) => (
+                <option key={a.id} value={a.id}>{a.icon} {a.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs md:col-span-2">
+            <span className="mb-1 block text-muted">Parent goal (optional — makes this a sub-goal)</span>
+            <select className={input} value={form.parent_goal_id} onChange={(e) => setForm({ ...form, parent_goal_id: e.target.value })}>
+              <option value="">— none (top-level) —</option>
+              {topLevel.map((g) => (
+                <option key={g.id} value={g.id}>{g.title}</option>
+              ))}
+            </select>
+          </label>
+          <div className="md:col-span-2">
+            <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy ? "…" : "Create goal"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {loading ? (
+        <div className="mt-6 space-y-2">{[0, 1].map((i) => <div key={i} className="skeleton h-20 w-full rounded-xl" />)}</div>
+      ) : goals.length === 0 ? (
+        <div className="mt-6 rounded-xl border border-dashed border-border p-8 text-center">
+          <Target size={24} className="mx-auto text-faint" />
+          <p className="mt-2 text-sm text-muted">No goals yet — set a measurable objective for your team.</p>
+        </div>
+      ) : (
+        <div className="mt-6 space-y-3">
+          {topLevel.map((g) => (
+            <div key={g.id} className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold">{g.title}</span>
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${g.status === "achieved" ? "bg-success/15 text-success" : g.status === "dropped" ? "bg-danger/15 text-danger" : "bg-accent/15 text-accent"}`}>
+                      {g.status}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-muted">
+                    {agentName(g.owner_agent_id ?? g.owner_user_id)} · {g.metric || "no metric"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => bump(g, -1)} className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-foreground">−</button>
+                  <button onClick={() => bump(g, 1)} className="rounded-md border border-border px-2 py-1 text-xs text-muted hover:text-foreground">+</button>
+                </div>
+              </div>
+              {g.target_value > 0 && (
+                <div className="mt-3">
+                  <div className="flex items-center justify-between text-[11px] text-muted">
+                    <span>{g.current_value} / {g.target_value} {g.unit}</span>
+                    <span>{Math.round(g.progress * 100)}%</span>
+                  </div>
+                  <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-border">
+                    <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.min(100, g.progress * 100)}%` }} />
+                  </div>
+                </div>
+              )}
+              {childrenOf(g.id).length > 0 && (
+                <div className="mt-3 space-y-2 border-l border-border pl-3">
+                  {childrenOf(g.id).map((c) => (
+                    <div key={c.id} className="flex items-center justify-between gap-2 rounded-lg bg-background px-3 py-2">
+                      <div className="min-w-0">
+                        <span className="block truncate text-xs font-medium">{c.title}</span>
+                        <span className="text-[10px] text-muted">{agentName(c.owner_agent_id ?? c.owner_user_id)}</span>
+                      </div>
+                      {c.target_value > 0 && (
+                        <div className="w-28">
+                          <div className="h-1 overflow-hidden rounded-full bg-border">
+                            <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, c.progress * 100)}%` }} />
+                          </div>
+                          <div className="mt-0.5 text-right text-[10px] text-muted">{Math.round(c.progress * 100)}%</div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Phase B: Review Inbox ---------------- */
+
+function ReviewView({ onChanged }: { onChanged: () => Promise<void> }) {
+  const [inbox, setInbox] = useState<ReviewInbox | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setInbox(await api<ReviewInbox>("/api/org/review"));
+    } catch {
+      /* boot race */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function act(t: AgentTaskInfo & { agent_name: string }, action: "approve" | "reject" | "run") {
+    setBusyId(t.id);
+    try {
+      if (action === "run") {
+        await api(`/api/agents/${t.agent_id}/tasks/${t.id}/run`, { method: "POST" });
+        toast(`Ran "${t.title}"`, "success");
+      } else {
+        await api(`/api/agents/${t.agent_id}/tasks/${t.id}/${action}`, { method: "POST" });
+        toast(`${action === "approve" ? "Approved" : "Rejected"} "${t.title}"`, action === "approve" ? "success" : "info");
+      }
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <h1 className="text-xl font-bold">Review Inbox</h1>
+      <p className="mt-0.5 text-xs text-muted">
+        Everything awaiting your approval across all AI employees.
+      </p>
+
+      {loading ? (
+        <div className="mt-6 space-y-2">{[0, 1].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : !inbox || inbox.pending_tasks.length === 0 ? (
+        <div className="mt-6 rounded-xl border border-dashed border-border p-8 text-center">
+          <Inbox size={24} className="mx-auto text-faint" />
+          <p className="mt-2 text-sm text-muted">Inbox zero — nothing needs your approval. 🎉</p>
+        </div>
+      ) : (
+        <div className="mt-6 space-y-2">
+          {inbox.pending_tasks.map((t) => (
+            <div key={t.id} className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold">{t.title}</span>
+                    {t.priority > 0 && (
+                      <span className="rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning">P{t.priority}</span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted">
+                    {t.agent_name}
+                    {t.delegated_by_agent_id && " · delegated by manager"}
+                    {t.description && <span className="block truncate">{t.description}</span>}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    disabled={busyId === t.id}
+                    onClick={() => act(t, "approve")}
+                    className="rounded-lg bg-success/15 px-3 py-1.5 text-xs font-semibold text-success transition hover:bg-success/25 disabled:opacity-50"
+                  >
+                    Approve
+                  </button>
+                  <button
+                    disabled={busyId === t.id}
+                    onClick={() => act(t, "reject")}
+                    className="rounded-lg bg-danger/15 px-3 py-1.5 text-xs font-semibold text-danger transition hover:bg-danger/25 disabled:opacity-50"
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface AutomationRunRow {

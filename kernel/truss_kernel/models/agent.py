@@ -95,6 +95,10 @@ class AgentTask(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     approved_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    # Phase B: goal this task contributes to + delegation provenance
+    goal_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    # set when a manager agent delegated this task down the org chart
+    delegated_by_agent_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     # execution results
     result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     error: Mapped[str] = mapped_column(Text, nullable=False, default="")

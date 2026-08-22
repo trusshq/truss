@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from truss_kernel.agents import engine as agent_engine
+from truss_kernel.agents import org as org_svc
 from truss_kernel.db import get_db
 from truss_kernel.deps import AuthContext, require_admin, require_member, require_viewer
 from truss_kernel.events import bus
@@ -36,6 +37,9 @@ class AgentIn(BaseModel):
     allowed_plugins: list[str] = Field(default_factory=list)
     budget_tokens: int = Field(default=0, ge=0)
     settings: dict = Field(default_factory=dict)
+    # Phase B: org chart placement
+    reports_to_agent_id: uuid.UUID | None = None
+    reports_to_user_id: uuid.UUID | None = None
 
 
 class AgentPatch(BaseModel):
@@ -50,12 +54,24 @@ class AgentPatch(BaseModel):
     allowed_plugins: list[str] | None = None
     budget_tokens: int | None = Field(default=None, ge=0)
     settings: dict | None = None
+    reports_to_agent_id: uuid.UUID | None = None
+    reports_to_user_id: uuid.UUID | None = None
 
 
 class TaskIn(BaseModel):
     agent_id: uuid.UUID
     title: str = Field(min_length=1, max_length=300)
     description: str = Field(default="", max_length=8000)
+    needs_review: bool = False
+    priority: int = Field(default=0, ge=0, le=10)
+    goal_id: uuid.UUID | None = None
+
+
+class DelegateIn(BaseModel):
+    report_id: uuid.UUID
+    title: str = Field(min_length=1, max_length=300)
+    description: str = Field(default="", max_length=8000)
+    goal_id: uuid.UUID | None = None
     needs_review: bool = False
     priority: int = Field(default=0, ge=0, le=10)
 
@@ -75,6 +91,8 @@ def agent_to_dict(a: Agent) -> dict:
         "budget_tokens": a.budget_tokens,
         "tokens_used": a.tokens_used,
         "runs_count": a.runs_count,
+        "reports_to_agent_id": str(a.reports_to_agent_id) if a.reports_to_agent_id else None,
+        "reports_to_user_id": str(a.reports_to_user_id) if a.reports_to_user_id else None,
         "settings": a.settings or {},
         "created_at": a.created_at.isoformat() if a.created_at else None,
     }
@@ -91,6 +109,8 @@ def task_to_dict(t: AgentTask) -> dict:
         "priority": t.priority,
         "created_by": str(t.created_by) if t.created_by else None,
         "approved_by": str(t.approved_by) if t.approved_by else None,
+        "goal_id": str(t.goal_id) if t.goal_id else None,
+        "delegated_by_agent_id": str(t.delegated_by_agent_id) if t.delegated_by_agent_id else None,
         "result": t.result or {},
         "error": t.error,
         "steps": t.steps,
@@ -154,6 +174,12 @@ async def hire_agent(body: AgentIn, auth: AuthContext = Depends(require_admin), 
     )
     db.add(a)
     await db.flush()
+    if body.reports_to_agent_id or body.reports_to_user_id:
+        try:
+            await org_svc.set_reports_to(db, auth.tenant_id, a,
+                                         body.reports_to_agent_id, body.reports_to_user_id)
+        except org_svc.OrgError as e:
+            raise HTTPException(422, str(e))
     await bus.emit(db, tenant_id=auth.tenant_id, event_type="agent.hired",
                    payload={"agent_id": str(a.id), "agent": a.name, "role": a.role,
                             "actor_type": "user"},
@@ -187,6 +213,15 @@ async def update_agent(agent_id: uuid.UUID, body: AgentPatch,
         ))).scalar_one_or_none()
         if clash:
             raise HTTPException(409, f"an agent named '{data['name']}' already exists")
+    # org-chart changes need cycle validation — route through the org service.
+    # PATCH semantics: if either field is present, the other resets to None.
+    if "reports_to_agent_id" in data or "reports_to_user_id" in data:
+        try:
+            await org_svc.set_reports_to(db, auth.tenant_id, a,
+                                         data.pop("reports_to_agent_id", None),
+                                         data.pop("reports_to_user_id", None))
+        except org_svc.OrgError as e:
+            raise HTTPException(422, str(e))
     for k, v in data.items():
         setattr(a, k, v)
     await db.commit()
@@ -260,6 +295,7 @@ async def create_task(agent_id: uuid.UUID, body: TaskIn,
         description=body.description,
         needs_review=body.needs_review,
         priority=body.priority,
+        goal_id=body.goal_id,
         created_by=auth.user_id,
         # tasks that don't need review are auto-approved
         status=TaskStatus.proposed if body.needs_review else TaskStatus.approved,
@@ -272,6 +308,30 @@ async def create_task(agent_id: uuid.UUID, body: TaskIn,
                             "task_id": str(t.id), "title": t.title,
                             "needs_review": t.needs_review, "actor_type": "user"},
                    actor_id=auth.user_id)
+    await db.commit()
+    await db.refresh(t)
+    return task_to_dict(t)
+
+
+@router.post("/{agent_id}/delegate", status_code=201)
+async def delegate_task(agent_id: uuid.UUID, body: DelegateIn,
+                        auth: AuthContext = Depends(require_member), db: AsyncSession = Depends(get_db)):
+    """A manager agent assigns a task to one of its direct reports.
+
+    The path agent is the MANAGER; body.report_id is the direct report.
+    Delegated tasks carry provenance (delegated_by_agent_id) and respect the
+    same approval gate as human-created tasks.
+    """
+    manager = await _get_agent(db, auth.tenant_id, agent_id)
+    report = await _get_agent(db, auth.tenant_id, body.report_id)
+    try:
+        t = await org_svc.delegate_task(
+            db, auth.tenant_id, manager, report,
+            title=body.title, description=body.description,
+            goal_id=body.goal_id, needs_review=body.needs_review, priority=body.priority,
+        )
+    except org_svc.OrgError as e:
+        raise HTTPException(422, str(e))
     await db.commit()
     await db.refresh(t)
     return task_to_dict(t)

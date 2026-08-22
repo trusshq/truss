@@ -285,6 +285,84 @@ export interface ApiKeyInfo {
   key?: string; // plaintext, only on creation
 }
 
+/* ---------- Phase B: org chart / goals / notifications ---------- */
+
+export interface OrgNode {
+  id: string;
+  kind: string;
+  name: string;
+  role: string;
+  icon: string;
+  status: string;
+  reports_to_agent: string | null;
+  reports_to_user: string | null;
+  manager_name?: string;
+  children: OrgNode[];
+}
+
+export interface GoalInfo {
+  id: string;
+  title: string;
+  description: string;
+  metric: string;
+  target_value: number;
+  current_value: number;
+  unit: string;
+  progress: number;
+  status: string;
+  owner_agent_id: string | null;
+  owner_user_id: string | null;
+  parent_goal_id: string | null;
+  due_at: string;
+  created_at: string | null;
+}
+
+export interface NotificationInfo {
+  id: string;
+  kind: string;
+  title: string;
+  body: string;
+  link: string;
+  actor_id: string | null;
+  actor_type: string;
+  read: boolean;
+  created_at: string | null;
+}
+
+export interface BudgetRow {
+  agent_id: string;
+  name: string;
+  icon: string;
+  status: string;
+  tokens_used: number;
+  budget_tokens: number;
+  utilization: number | null;
+  runs_count: number;
+  over_budget: boolean;
+}
+
+export interface BudgetLedger {
+  agents: BudgetRow[];
+  total_tokens_used: number;
+  total_budget: number;
+  uncapped_agents: number;
+}
+
+export interface ReviewInbox {
+  pending_tasks: (AgentTaskInfo & { agent_name: string })[];
+  count: number;
+}
+
+export interface TaskCommentInfo {
+  id: string;
+  task_id: string;
+  body: string;
+  author_id: string | null;
+  author_type: string;
+  mentions: string[];
+  created_at: string | null;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;
@@ -299,6 +377,8 @@ export interface AgentInfo {
   budget_tokens: number;
   tokens_used: number;
   runs_count: number;
+  reports_to_agent_id: string | null;
+  reports_to_user_id: string | null;
   settings: Record<string, unknown>;
   created_at: string | null;
 }
@@ -313,6 +393,8 @@ export interface AgentTaskInfo {
   priority: number;
   created_by: string | null;
   approved_by: string | null;
+  goal_id: string | null;
+  delegated_by_agent_id: string | null;
   result: { reply?: string; trace?: ChatTraceItem[] };
   error: string;
   steps: number;

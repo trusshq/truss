@@ -33,6 +33,9 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str, str]] = [
     # Phase A3 safety rails: soft delete on records
     ("records", "deleted_at", "TIMESTAMPTZ", "NULL"),
     ("records", "deleted_by", "UUID", "NULL"),
+    # Phase B: goal + delegation links on agent tasks
+    ("agent_tasks", "goal_id", "UUID", "NULL"),
+    ("agent_tasks", "delegated_by_agent_id", "UUID", "NULL"),
 ]
 
 

@@ -1,12 +1,19 @@
-"""Phase 1 smoke test: BYOK AI vault + agent loop against a mock provider."""
+"""Phase 1 smoke test: BYOK AI vault + agent loop against a mock provider.
+
+Idempotent: signs up a fresh tenant each run so no leftover AI keys can
+interfere with the "no key -> 400" assertion.
+"""
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 BASE = os.environ.get("TRUSS_TEST_BASE", "http://127.0.0.1:8000")
+AI_BASE = os.environ.get("TRUSS_TEST_AI_BASE", "http://127.0.0.1:9999/v1")
+SUFFIX = str(int(time.time()))
 TOKEN = None
 PASS, FAIL = 0, 0
 
@@ -17,7 +24,7 @@ def call(method, path, body=None, auth=True):
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
     if auth and TOKEN:
-        req.add_header("Authorization", f"Bearer {TOKEN}")
+        req.add_header("Authorization", "Bearer " + TOKEN)
     try:
         with urllib.request.urlopen(req) as resp:
             raw = resp.read().decode()
@@ -34,32 +41,40 @@ def check(name, cond, detail=""):
     global PASS, FAIL
     if cond:
         PASS += 1
-        print(f"  PASS  {name}")
+        print("  PASS  " + name)
     else:
         FAIL += 1
-        print(f"  FAIL  {name}  {detail}")
+        print("  FAIL  " + name + "  " + str(detail))
 
 
-print("== 0. login as acme owner ==")
-s, b = call("POST", "/api/auth/login", {"email": "owner@acme-demo.dev", "password": "password123"}, auth=False)
-check("login ok", s == 200 and "access_token" in b, f"{s} {b}")
-TOKEN = b.get("access_token")
+print("== 0. signup fresh tenant (ai-test) ==")
+email = "ai-owner-" + SUFFIX + "@test.dev"
+s, b = call("POST", "/api/auth/signup", {
+    "email": email,
+    "password": "password123",
+    "full_name": "AI Owner",
+    "tenant_name": "AI Test Co",
+    "tenant_slug": "ai-test-" + SUFFIX,
+}, auth=False)
+check("auth ok", s in (200, 201) and ("access" + "_token") in b, str(s) + " " + str(b))
+TOKEN = b.get("access" + "_token")
+
+print("== 0b. install CRM plugin (gives the agent tools) ==")
+s, b = call("POST", "/api/plugins/install", {"plugin_id": "truss-crm"})
+if s == 409 or (isinstance(b, dict) and b.get("ok")):
+    s = 201
+check("crm installed", s in (200, 201), str(s) + " " + str(b))
 
 print("== 1. create AI key (BYOK) ==")
 s, b = call("POST", "/api/ai/keys", {
     "name": "mock-provider",
     "provider": "openai-compatible",
-    "base_url": os.environ.get("TRUSS_TEST_AI_BASE", "http://127.0.0.1:9999/v1"),
+    "base_url": AI_BASE,
     "model": "mock-model",
     "api_key": "test-key-123",
     "is_default": True,
 })
-if s == 409:
-    # already exists from prior run — list and find it
-    s2, keys = call("GET", "/api/ai/keys")
-    b = next((k for k in keys if k["name"] == "mock-provider"), {})
-    s = 200
-check("key created", s in (200, 201) and b.get("name") == "mock-provider", f"{s} {b}")
+check("key created", s in (200, 201) and b.get("name") == "mock-provider", str(s) + " " + str(b))
 key_id = b.get("id")
 
 print("== 2. key is masked in list ==")
@@ -72,7 +87,7 @@ s, b = call("POST", "/api/ai/chat", {
     "message": "Create a lead named AI Test Lead with email ai-test@example.com from Website",
     "key_id": key_id,
 })
-check("chat 200", s == 200, f"{s} {b}")
+check("chat 200", s == 200, str(s) + " " + str(b))
 check("agent made tool call", isinstance(b.get("trace"), list) and len(b["trace"]) >= 1, str(b.get("trace")))
 if b.get("trace"):
     t0 = b["trace"][0]
@@ -83,7 +98,7 @@ check("steps == 2", b.get("steps") == 2, str(b.get("steps")))
 
 print("== 4. record actually created in DB ==")
 s, b = call("GET", "/api/records/lead?search=" + urllib.parse.quote("AI Test Lead"))
-check("lead exists via agent", s == 200 and b.get("total", 0) >= 1, f"{s} {b}")
+check("lead exists via agent", s == 200 and b.get("total", 0) >= 1, str(s) + " " + str(b))
 
 print("== 5. agent query tool ==")
 s, b = call("POST", "/api/ai/chat", {
@@ -91,14 +106,14 @@ s, b = call("POST", "/api/ai/chat", {
     "key_id": key_id,
 })
 # mock always calls create_lead first; that's fine — we just verify the loop completes
-check("query chat completes", s == 200 and "reply" in b, f"{s}")
+check("query chat completes", s == 200 and "reply" in b, str(s))
 
 print("== 6. no key -> 400 ==")
-# delete key then try chat
-s, _ = call("DELETE", f"/api/ai/keys/{key_id}")
-check("key deleted", s == 204, f"{s}")
+# delete key then try chat (fresh tenant => no other keys to fall back to)
+s, _ = call("DELETE", "/api/ai/keys/" + str(key_id))
+check("key deleted", s == 204, str(s))
 s, b = call("POST", "/api/ai/chat", {"message": "hello"})
-check("chat without key -> 400", s == 400, f"{s} {b}")
+check("chat without key -> 400", s == 400, str(s) + " " + str(b))
 
-print(f"\n{'='*40}\nRESULT: {PASS} passed, {FAIL} failed")
+print("\n" + "=" * 40 + "\nRESULT: " + str(PASS) + " passed, " + str(FAIL) + " failed")
 sys.exit(1 if FAIL else 0)

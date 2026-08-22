@@ -5,6 +5,7 @@ from truss_kernel.models.automation import AutomationRun
 from truss_kernel.models.base import Base
 from truss_kernel.models.connector import Connector, WebhookDelivery
 from truss_kernel.models.metadata import FieldDef, FieldType, ObjectDef, Record, RecordHistory
+from truss_kernel.models.org import Goal, GoalStatus, Notification, TaskComment
 from truss_kernel.models.plugin import EventLog, PluginInstall
 from truss_kernel.models.tenant import Membership, Tenant, TenantRole, User
 
@@ -28,6 +29,10 @@ __all__ = [
     "Record",
     "RecordHistory",
     "ApiKey",
+    "Goal",
+    "GoalStatus",
+    "Notification",
+    "TaskComment",
     "PluginInstall",
     "EventLog",
 ]

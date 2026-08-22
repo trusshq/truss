@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from truss_kernel.ai import client as ai_client
 from truss_kernel.ai.agent import _execute_tool, collect_tools
 from truss_kernel.ai.vault import decrypt_secret
+from truss_kernel.agents import org as org_svc
 from truss_kernel.events import bus
 from truss_kernel.models.agent import Agent, AgentStatus, AgentTask, TaskStatus
 from truss_kernel.models.ai import AiKey
@@ -82,6 +83,19 @@ def _budget_exhausted(agent: Agent) -> bool:
     return agent.budget_tokens > 0 and agent.tokens_used >= agent.budget_tokens
 
 
+async def _notify_manager(db: AsyncSession, tenant_id: uuid.UUID, agent: Agent, *,
+                          kind: str, title: str, body: str = "") -> None:
+    """Notify the agent's human manager, else all admins (the bell)."""
+    if agent.reports_to_user_id:
+        await org_svc.notify(db, tenant_id, agent.reports_to_user_id, kind=kind,
+                             title=title, body=body, link=f"/agents/{agent.id}",
+                             actor_id=agent.id, actor_type="agent")
+    else:
+        await org_svc.notify_admins(db, tenant_id, kind=kind, title=title, body=body,
+                                    link=f"/agents/{agent.id}",
+                                    actor_id=agent.id, actor_type="agent")
+
+
 async def run_task(db: AsyncSession, tenant_id: uuid.UUID, agent: Agent, task: AgentTask) -> dict:
     """Execute one task for one agent. Returns the result dict.
 
@@ -106,6 +120,9 @@ async def run_task(db: AsyncSession, tenant_id: uuid.UUID, agent: Agent, task: A
                        payload={"agent_id": str(agent.id), "agent": agent.name,
                                 "reason": "budget_exhausted", "actor_type": "agent"},
                        actor_id=agent.id)
+        await _notify_manager(db, tenant_id, agent, kind="budget",
+                              title=f"{agent.name} hit its token budget and paused",
+                              body=f"Task '{task.title}' could not run. Raise the budget or resume the agent.")
         await db.commit()
         return {"ok": False, "error": task.error}
 
@@ -207,6 +224,9 @@ async def run_task(db: AsyncSession, tenant_id: uuid.UUID, agent: Agent, task: A
                                 "task_id": str(task.id), "error": str(e),
                                 "actor_type": "agent"},
                        actor_id=agent.id)
+        await _notify_manager(db, tenant_id, agent, kind="task_failed",
+                              title=f"{agent.name} failed: {task.title}",
+                              body=str(e)[:300])
         await db.commit()
         return {"ok": False, "error": str(e), "steps": steps, "tokens": total_tokens}
 
@@ -224,5 +244,20 @@ async def run_task(db: AsyncSession, tenant_id: uuid.UUID, agent: Agent, task: A
                             "steps": steps, "tokens": total_tokens,
                             "actor_type": "agent"},
                    actor_id=agent.id)
+    await _notify_manager(db, tenant_id, agent, kind="task_done",
+                          title=f"{agent.name} finished: {task.title}",
+                          body=reply[:300])
+    # goal roll-up: if this task belongs to a goal, refresh its progress
+    if task.goal_id:
+        from truss_kernel.models.org import Goal
+        goal = (await db.execute(select(Goal).where(
+            Goal.id == task.goal_id, Goal.tenant_id == tenant_id
+        ))).scalar_one_or_none()
+        if goal and goal.parent_goal_id:
+            parent = (await db.execute(select(Goal).where(
+                Goal.id == goal.parent_goal_id, Goal.tenant_id == tenant_id
+            ))).scalar_one_or_none()
+            if parent:
+                await org_svc.roll_up_progress(db, tenant_id, parent)
     await db.commit()
     return {"ok": True, "reply": reply, "trace": trace, "steps": steps, "tokens": total_tokens}
