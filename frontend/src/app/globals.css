@@ -269,3 +269,13 @@ body {
   .view-in, .toast-in, .palette-backdrop, .palette-panel { animation: none; }
   .skeleton { animation: none; }
 }
+
+/* slim scrollbar for the sidebar nav region */
+nav::-webkit-scrollbar { width: 6px; }
+nav::-webkit-scrollbar-track { background: transparent; }
+nav::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+nav::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+nav { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }

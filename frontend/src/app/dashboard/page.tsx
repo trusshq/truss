@@ -20,6 +20,7 @@ import {
   Kanban,
   LayoutGrid,
   LogOut,
+  Menu,
   Monitor,
   Moon,
   Palette,
@@ -189,6 +190,177 @@ function NavSection({
   );
 }
 
+/* ---------------- Sidebar content (shared by desktop rail + mobile drawer) ---------------- */
+
+function SidebarContent({
+  me,
+  view,
+  setView,
+  openSections,
+  toggleSection,
+  tableSurfaces,
+  boardSurfaces,
+  onNavigate,
+  onOpenPalette,
+  onSignOut,
+}: {
+  me: Me;
+  view: View;
+  setView: (v: View) => void;
+  openSections: Record<string, boolean>;
+  toggleSection: (id: string) => void;
+  tableSurfaces: { label: string; icon: string; object?: string; slug: string; view: string; groupBy?: string }[];
+  boardSurfaces: { label: string; icon: string; object?: string; slug: string; view: string; groupBy?: string }[];
+  onNavigate?: () => void;
+  onOpenPalette: () => void;
+  onSignOut: () => void;
+}) {
+  const go = (v: View) => {
+    setView(v);
+    onNavigate?.();
+  };
+
+  return (
+    <>
+      {/* Brand */}
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3.5">
+        <span className="text-xl">🏗️</span>
+        <div className="min-w-0">
+          <div className="text-sm font-bold leading-tight">Truss</div>
+          <div className="truncate text-[11px] text-muted">{me.tenant_name}</div>
+        </div>
+      </div>
+
+      {/* command palette trigger */}
+      <button
+        onClick={onOpenPalette}
+        className="mx-2 mt-2 flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-muted transition hover:border-border-strong hover:text-foreground"
+      >
+        <Search size={13} />
+        <span className="flex-1 text-left">Search or jump to…</span>
+        <kbd className="flex items-center gap-0.5 rounded border border-border px-1 py-0.5 font-mono text-[10px]">
+          <Command size={9} />K
+        </kbd>
+      </button>
+
+      {/* Nav — the only scrollable region; header & footer stay pinned */}
+      <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
+        <NavItem
+          active={view.kind === "home"}
+          onClick={() => go({ kind: "home" })}
+          icon={<Home size={15} />}
+          label="Home"
+        />
+
+        {/* Apps — every table view, grouped in one dropdown */}
+        <NavSection
+          icon={<LayoutGrid size={15} />}
+          label="Apps"
+          count={tableSurfaces.length}
+          open={openSections.apps}
+          onToggle={() => toggleSection("apps")}
+          active={view.kind === "object"}
+        >
+          {tableSurfaces.length === 0 && (
+            <div className="px-2 py-1 text-xs text-muted">Install a plugin to see its apps →</div>
+          )}
+          {tableSurfaces.map((s) => (
+            <NavItem
+              key={s.slug}
+              active={view.kind === "object" && view.slug === s.object}
+              onClick={() => go({ kind: "object", slug: s.object! })}
+              icon={<span className="text-[13px] leading-none">{s.icon}</span>}
+              label={s.label}
+            />
+          ))}
+        </NavSection>
+
+        {/* Boards — every kanban board, grouped in one dropdown */}
+        <NavSection
+          icon={<Kanban size={15} />}
+          label="Boards"
+          count={boardSurfaces.length}
+          open={openSections.boards}
+          onToggle={() => toggleSection("boards")}
+          active={view.kind === "kanban"}
+        >
+          {boardSurfaces.length === 0 && (
+            <div className="px-2 py-1 text-xs text-muted">No boards yet — enable a plugin with a board view.</div>
+          )}
+          {boardSurfaces.map((s) => (
+            <NavItem
+              key={s.slug}
+              active={view.kind === "kanban" && view.slug === s.slug}
+              onClick={() =>
+                go(
+                  s.groupBy
+                    ? { kind: "kanban", slug: s.slug, object: s.object!, groupBy: s.groupBy }
+                    : { kind: "object", slug: s.object! }
+                )
+              }
+              icon={<span className="text-[13px] leading-none">{s.icon}</span>}
+              label={s.label}
+            />
+          ))}
+        </NavSection>
+
+        {/* Platform — plugins, marketplace, AI, automations, connectors, events */}
+        <NavSection
+          icon={<Puzzle size={15} />}
+          label="Platform"
+          open={openSections.platform}
+          onToggle={() => toggleSection("platform")}
+          active={["plugins", "marketplace", "ai", "automations", "connectors", "events"].includes(view.kind)}
+        >
+          <NavItem active={view.kind === "plugins"} onClick={() => go({ kind: "plugins" })} icon={<Puzzle size={15} />} label="Plugins" />
+          <NavItem active={view.kind === "marketplace"} onClick={() => go({ kind: "marketplace" })} icon={<Store size={15} />} label="Marketplace" />
+          {me.role !== "viewer" && (
+            <NavItem active={view.kind === "ai"} onClick={() => go({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
+          )}
+          <NavItem active={view.kind === "automations"} onClick={() => go({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
+          {me.role !== "viewer" && (
+            <NavItem active={view.kind === "connectors"} onClick={() => go({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
+          )}
+          <NavItem active={view.kind === "events"} onClick={() => go({ kind: "events" })} icon={<Zap size={15} />} label="Events" />
+        </NavSection>
+
+        {/* Account — workspace, profile, appearance */}
+        <NavSection
+          icon={<UserCircle size={15} />}
+          label="Account"
+          open={openSections.account}
+          onToggle={() => toggleSection("account")}
+          active={["workspace", "profile", "settings"].includes(view.kind)}
+        >
+          <NavItem active={view.kind === "workspace"} onClick={() => go({ kind: "workspace" })} icon={<Boxes size={15} />} label="Workspace" badge={me.role} />
+          <NavItem active={view.kind === "profile"} onClick={() => go({ kind: "profile" })} icon={<UserCircle size={15} />} label="Profile" />
+          <NavItem active={view.kind === "settings"} onClick={() => go({ kind: "settings" })} icon={<Palette size={15} />} label="Appearance" />
+        </NavSection>
+      </nav>
+
+      {/* Footer — always visible, never pushed off-screen */}
+      <div className="border-t border-border p-2">
+        <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-xs font-bold text-accent">
+            {(me.full_name || me.email).slice(0, 1).toUpperCase()}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-xs font-medium">{me.full_name || me.email}</div>
+            <div className="truncate text-[10px] text-muted">{me.email}</div>
+          </div>
+          <button
+            onClick={onSignOut}
+            title="Sign out"
+            className="shrink-0 rounded-md p-1.5 text-muted transition hover:bg-danger/15 hover:text-danger"
+          >
+            <LogOut size={14} />
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [me, setMe] = useState<Me | null>(null);
@@ -197,13 +369,28 @@ export default function DashboardPage() {
   const [view, setView] = useState<View>({ kind: "home" });
   const [bootError, setBootError] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
-    apps: true,
-    boards: true,
-    platform: true,
-    account: false,
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // Section open/close state persists across reloads
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>(() => {
+    const defaults = { apps: true, boards: true, platform: true, account: false };
+    if (typeof window === "undefined") return defaults;
+    try {
+      const saved = localStorage.getItem("truss.sidebar.sections");
+      return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+    } catch {
+      return defaults;
+    }
   });
-  const toggleSection = (id: string) => setOpenSections((s) => ({ ...s, [id]: !s[id] }));
+  const toggleSection = (id: string) =>
+    setOpenSections((s) => {
+      const next = { ...s, [id]: !s[id] };
+      try {
+        localStorage.setItem("truss.sidebar.sections", JSON.stringify(next));
+      } catch {
+        /* private mode */
+      }
+      return next;
+    });
 
   // Ctrl/Cmd+K command palette
   useEffect(() => {
@@ -295,166 +482,94 @@ export default function DashboardPage() {
     );
   }
 
+  const signOut = () => {
+    setToken(null);
+    router.replace("/login");
+  };
+
+  const sidebarProps = {
+    me,
+    view,
+    setView,
+    openSections,
+    toggleSection,
+    tableSurfaces,
+    boardSurfaces,
+    onOpenPalette: () => setPaletteOpen(true),
+    onSignOut: signOut,
+  };
+
   return (
-    <main className="flex min-h-screen">
-      {/* Sidebar */}
-      <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-card/50">
-        <div className="flex items-center gap-2 border-b border-border px-4 py-4">
-          <span className="text-xl">🏗️</span>
-          <div className="min-w-0">
-            <div className="text-sm font-bold leading-tight">Truss</div>
-            <div className="truncate text-[11px] text-muted">{me.tenant_name}</div>
-          </div>
-        </div>
-
-        {/* command palette trigger */}
-        <button
-          onClick={() => setPaletteOpen(true)}
-          className="mx-2 mt-2 flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-muted transition hover:border-border-strong hover:text-foreground"
-        >
-          <Search size={13} />
-          <span className="flex-1 text-left">Search or jump to…</span>
-          <kbd className="flex items-center gap-0.5 rounded border border-border px-1 py-0.5 font-mono text-[10px]">
-            <Command size={9} />K
-          </kbd>
-        </button>
-
-        <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
-          <NavItem
-            active={view.kind === "home"}
-            onClick={() => setView({ kind: "home" })}
-            icon={<Home size={15} />}
-            label="Home"
-          />
-
-          {/* Apps — every table view, grouped in one dropdown */}
-          <NavSection
-            icon={<LayoutGrid size={15} />}
-            label="Apps"
-            count={tableSurfaces.length}
-            open={openSections.apps}
-            onToggle={() => toggleSection("apps")}
-            active={view.kind === "object"}
-          >
-            {tableSurfaces.length === 0 && (
-              <div className="px-2 py-1 text-xs text-muted">Install a plugin to see its apps →</div>
-            )}
-            {tableSurfaces.map((s) => (
-              <NavItem
-                key={s.slug}
-                active={view.kind === "object" && view.slug === s.object}
-                onClick={() => setView({ kind: "object", slug: s.object! })}
-                icon={<span className="text-[13px] leading-none">{s.icon}</span>}
-                label={s.label}
-              />
-            ))}
-          </NavSection>
-
-          {/* Boards — every kanban board, grouped in one dropdown */}
-          <NavSection
-            icon={<Kanban size={15} />}
-            label="Boards"
-            count={boardSurfaces.length}
-            open={openSections.boards}
-            onToggle={() => toggleSection("boards")}
-            active={view.kind === "kanban"}
-          >
-            {boardSurfaces.length === 0 && (
-              <div className="px-2 py-1 text-xs text-muted">No boards yet — enable a plugin with a board view.</div>
-            )}
-            {boardSurfaces.map((s) => (
-              <NavItem
-                key={s.slug}
-                active={view.kind === "kanban" && view.slug === s.slug}
-                onClick={() =>
-                  s.groupBy
-                    ? setView({ kind: "kanban", slug: s.slug, object: s.object!, groupBy: s.groupBy })
-                    : setView({ kind: "object", slug: s.object! })
-                }
-                icon={<span className="text-[13px] leading-none">{s.icon}</span>}
-                label={s.label}
-              />
-            ))}
-          </NavSection>
-
-          {/* Platform — plugins, marketplace, AI, automations, connectors, events */}
-          <NavSection
-            icon={<Puzzle size={15} />}
-            label="Platform"
-            open={openSections.platform}
-            onToggle={() => toggleSection("platform")}
-            active={["plugins", "marketplace", "ai", "automations", "connectors", "events"].includes(view.kind)}
-          >
-            <NavItem active={view.kind === "plugins"} onClick={() => setView({ kind: "plugins" })} icon={<Puzzle size={15} />} label="Plugins" />
-            <NavItem active={view.kind === "marketplace"} onClick={() => setView({ kind: "marketplace" })} icon={<Store size={15} />} label="Marketplace" />
-            {me.role !== "viewer" && (
-              <NavItem active={view.kind === "ai"} onClick={() => setView({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
-            )}
-            <NavItem active={view.kind === "automations"} onClick={() => setView({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
-            {me.role !== "viewer" && (
-              <NavItem active={view.kind === "connectors"} onClick={() => setView({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
-            )}
-            <NavItem active={view.kind === "events"} onClick={() => setView({ kind: "events" })} icon={<Zap size={15} />} label="Events" />
-          </NavSection>
-
-          {/* Account — workspace, profile, appearance */}
-          <NavSection
-            icon={<UserCircle size={15} />}
-            label="Account"
-            open={openSections.account}
-            onToggle={() => toggleSection("account")}
-            active={["workspace", "profile", "settings"].includes(view.kind)}
-          >
-            <NavItem active={view.kind === "workspace"} onClick={() => setView({ kind: "workspace" })} icon={<Boxes size={15} />} label="Workspace" badge={me.role} />
-            <NavItem active={view.kind === "profile"} onClick={() => setView({ kind: "profile" })} icon={<UserCircle size={15} />} label="Profile" />
-            <NavItem active={view.kind === "settings"} onClick={() => setView({ kind: "settings" })} icon={<Palette size={15} />} label="Appearance" />
-          </NavSection>
-        </nav>
-
-        <div className="border-t border-border p-3 text-xs">
-          <div className="truncate text-muted">{me.email}</div>
-          <button
-            onClick={() => {
-              setToken(null);
-              router.replace("/login");
-            }}
-            className="mt-1 flex items-center gap-1 text-muted underline-offset-2 hover:text-danger hover:underline"
-          >
-            <LogOut size={12} /> Sign out
-          </button>
-        </div>
+    <main className="flex h-screen overflow-hidden">
+      {/* Desktop sidebar — fixed to viewport height; only the nav scrolls */}
+      <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-card/50 md:flex">
+        <SidebarContent {...sidebarProps} />
       </aside>
 
-      {/* Main */}
-      <section className="min-w-0 flex-1 overflow-y-auto p-6">
-        <div key={JSON.stringify(view)} className="view-in">
-          {view.kind === "home" && (
-            <HomeView me={me} plugins={plugins} objects={objects} surfaces={surfaces} setView={setView} />
-          )}
-          {view.kind === "plugins" && <PluginsView plugins={plugins} onChanged={refresh} />}
-          {view.kind === "marketplace" && <MarketplaceView onChanged={refresh} />}
-          {view.kind === "events" && <EventsView />}
-          {view.kind === "ai" && <AiView onChanged={refresh} />}
-          {view.kind === "automations" && <AutomationsView />}
-          {view.kind === "connectors" && <ConnectorsView />}
-          {view.kind === "settings" && <SettingsView />}
-          {view.kind === "workspace" && <WorkspaceView me={me} onMeChanged={refresh} />}
-          {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
-          {view.kind === "object" && (
-            <ObjectView
-              object={objects.find((o) => o.slug === view.slug) ?? null}
-              onChanged={refresh}
-            />
-          )}
-          {view.kind === "kanban" && (
-            <KanbanView
-              object={objects.find((o) => o.slug === view.object) ?? null}
-              groupBy={view.groupBy}
-              onChanged={refresh}
-            />
-          )}
+      {/* Mobile drawer */}
+      {mobileNavOpen && (
+        <div className="fixed inset-0 z-40 md:hidden">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setMobileNavOpen(false)} />
+          <aside className="absolute inset-y-0 left-0 flex w-64 flex-col border-r border-border bg-card shadow-xl">
+            <SidebarContent {...sidebarProps} onNavigate={() => setMobileNavOpen(false)} />
+          </aside>
         </div>
-      </section>
+      )}
+
+      {/* Main column */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Mobile top bar */}
+        <div className="flex items-center gap-2 border-b border-border bg-card/50 px-3 py-2 md:hidden">
+          <button
+            onClick={() => setMobileNavOpen(true)}
+            className="rounded-lg border border-border p-1.5 text-muted transition hover:text-foreground"
+            title="Open navigation"
+          >
+            <Menu size={16} />
+          </button>
+          <span className="text-base">🏗️</span>
+          <span className="text-sm font-bold">Truss</span>
+          <span className="truncate text-[11px] text-muted">{me.tenant_name}</span>
+          <button
+            onClick={() => setPaletteOpen(true)}
+            className="ml-auto rounded-lg border border-border p-1.5 text-muted transition hover:text-foreground"
+            title="Search"
+          >
+            <Search size={15} />
+          </button>
+        </div>
+
+        {/* Content — the only region that scrolls with page content */}
+        <section className="min-h-0 flex-1 overflow-y-auto p-6">
+          <div key={JSON.stringify(view)} className="view-in">
+            {view.kind === "home" && (
+              <HomeView me={me} plugins={plugins} objects={objects} surfaces={surfaces} setView={setView} />
+            )}
+            {view.kind === "plugins" && <PluginsView plugins={plugins} onChanged={refresh} />}
+            {view.kind === "marketplace" && <MarketplaceView onChanged={refresh} />}
+            {view.kind === "events" && <EventsView />}
+            {view.kind === "ai" && <AiView onChanged={refresh} />}
+            {view.kind === "automations" && <AutomationsView />}
+            {view.kind === "connectors" && <ConnectorsView />}
+            {view.kind === "settings" && <SettingsView />}
+            {view.kind === "workspace" && <WorkspaceView me={me} onMeChanged={refresh} />}
+            {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
+            {view.kind === "object" && (
+              <ObjectView
+                object={objects.find((o) => o.slug === view.slug) ?? null}
+                onChanged={refresh}
+              />
+            )}
+            {view.kind === "kanban" && (
+              <KanbanView
+                object={objects.find((o) => o.slug === view.object) ?? null}
+                groupBy={view.groupBy}
+                onChanged={refresh}
+              />
+            )}
+          </div>
+        </section>
+      </div>
 
       <CommandPalette
         open={paletteOpen}
