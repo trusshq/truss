@@ -39,6 +39,7 @@ SUITES = [
     "orchestration_smoke_test.py",
     "insights_smoke_test.py",
     "devplatform_smoke_test.py",
+    "chatcontrol_smoke_test.py",
 ]
 
 

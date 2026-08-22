@@ -27,6 +27,7 @@ import {
   LayoutGrid,
   LogOut,
   Menu,
+  MessageSquare,
   Monitor,
   Moon,
   Network,
@@ -36,6 +37,7 @@ import {
   Puzzle,
   RotateCcw,
   Search,
+  Send,
   Shield,
   Store,
   Sun,
@@ -86,10 +88,11 @@ import {
   type RoleInfo,
   type Workspace,
 } from "@/lib/api";
-import { ACCENT_PRESETS, useTheme, type Density, type Radius, type ThemeMode } from "@/lib/theme";
+import { ACCENT_PRESETS, useTheme, type Density, type FontFamily, type FontScale, type Motion, type Radius, type ThemeMode } from "@/lib/theme";
 
 type View =
   | { kind: "home" }
+  | { kind: "chat" }
   | { kind: "object"; slug: string }
   | { kind: "kanban"; slug: string; object: string; groupBy: string }
   | { kind: "plugins" }
@@ -97,6 +100,7 @@ type View =
   | { kind: "events" }
   | { kind: "ai" }
   | { kind: "agents" }
+  | { kind: "aihub" }
   | { kind: "org" }
   | { kind: "goals" }
   | { kind: "review" }
@@ -280,13 +284,19 @@ function SidebarContent({
         </kbd>
       </button>
 
-      {/* Nav — the only scrollable region; header & footer stay pinned */}
+      {/* Nav — the only scrollable region; header & footer stays pinned */}
       <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
         <NavItem
           active={view.kind === "home"}
           onClick={() => go({ kind: "home" })}
           icon={<Home size={15} />}
           label="Home"
+        />
+        <NavItem
+          active={view.kind === "chat"}
+          onClick={() => go({ kind: "chat" })}
+          icon={<MessageSquare size={15} />}
+          label="Chat"
         />
 
         {/* Apps — every table view, grouped in one dropdown */}
@@ -341,32 +351,68 @@ function SidebarContent({
           ))}
         </NavSection>
 
-        {/* Platform — plugins, marketplace, AI, automations, connectors, events */}
+        {/* AI Employees — the hub: overview, roster, org chart, goals, review, autopilot */}
         <NavSection
-          icon={<Puzzle size={15} />}
-          label="Platform"
-          open={openSections.platform}
-          onToggle={() => toggleSection("platform")}
-          active={["plugins", "marketplace", "ai", "automations", "connectors", "events"].includes(view.kind)}
+          icon={<Bot size={15} />}
+          label="AI Employees"
+          open={openSections.aihub}
+          onToggle={() => toggleSection("aihub")}
+          active={["aihub", "agents", "org", "goals", "review", "autopilot"].includes(view.kind)}
         >
-          <NavItem active={view.kind === "plugins"} onClick={() => go({ kind: "plugins" })} icon={<Puzzle size={15} />} label="Plugins" />
-          <NavItem active={view.kind === "marketplace"} onClick={() => go({ kind: "marketplace" })} icon={<Store size={15} />} label="Marketplace" />
-          {me.role !== "viewer" && (
-            <NavItem active={view.kind === "ai"} onClick={() => go({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
-          )}
-          <NavItem active={view.kind === "agents"} onClick={() => go({ kind: "agents" })} icon={<Users size={15} />} label="AI Employees" />
+          <NavItem active={view.kind === "aihub"} onClick={() => go({ kind: "aihub" })} icon={<LayoutGrid size={15} />} label="Overview" />
+          <NavItem active={view.kind === "agents"} onClick={() => go({ kind: "agents" })} icon={<Users size={15} />} label="Employees" />
           <NavItem active={view.kind === "org"} onClick={() => go({ kind: "org" })} icon={<Network size={15} />} label="Org Chart" />
           <NavItem active={view.kind === "goals"} onClick={() => go({ kind: "goals" })} icon={<Target size={15} />} label="Goals" />
           <NavItem active={view.kind === "review"} onClick={() => go({ kind: "review" })} icon={<Inbox size={15} />} label="Review Inbox" />
           <NavItem active={view.kind === "autopilot"} onClick={() => go({ kind: "autopilot" })} icon={<Zap size={15} />} label="Autopilot" />
-          <NavItem active={view.kind === "insights"} onClick={() => go({ kind: "insights" })} icon={<BarChart3 size={15} />} label="Insights" />
-          <NavItem active={view.kind === "developer"} onClick={() => go({ kind: "developer" })} icon={<Code2 size={15} />} label="Developer" />
+        </NavSection>
+
+        {/* Marketplace — standalone top-level section */}
+        <NavItem
+          active={view.kind === "marketplace"}
+          onClick={() => go({ kind: "marketplace" })}
+          icon={<Store size={15} />}
+          label="Marketplace"
+        />
+
+        {/* Insights — standalone */}
+        <NavItem
+          active={view.kind === "insights"}
+          onClick={() => go({ kind: "insights" })}
+          icon={<BarChart3 size={15} />}
+          label="Insights"
+        />
+
+        {/* Automations — automations, connectors, events */}
+        <NavSection
+          icon={<Cog size={15} />}
+          label="Automations"
+          open={openSections.automations}
+          onToggle={() => toggleSection("automations")}
+          active={["automations", "connectors", "events"].includes(view.kind)}
+        >
           <NavItem active={view.kind === "automations"} onClick={() => go({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
           {me.role !== "viewer" && (
             <NavItem active={view.kind === "connectors"} onClick={() => go({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
           )}
           <NavItem active={view.kind === "events"} onClick={() => go({ kind: "events" })} icon={<Zap size={15} />} label="Events" />
         </NavSection>
+
+        {/* Developer — standalone */}
+        <NavItem
+          active={view.kind === "developer"}
+          onClick={() => go({ kind: "developer" })}
+          icon={<Code2 size={15} />}
+          label="Developer"
+        />
+
+        {/* Plugins — standalone */}
+        <NavItem
+          active={view.kind === "plugins"}
+          onClick={() => go({ kind: "plugins" })}
+          icon={<Puzzle size={15} />}
+          label="Plugins"
+        />
 
         {/* Account — workspace, profile, appearance */}
         <NavSection
@@ -417,7 +463,7 @@ export default function DashboardPage() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   // Section open/close state persists across reloads
   const [openSections, setOpenSections] = useState<Record<string, boolean>>(() => {
-    const defaults = { apps: true, boards: true, platform: true, account: false };
+    const defaults = { apps: true, boards: true, aihub: true, automations: true, account: false };
     if (typeof window === "undefined") return defaults;
     try {
       const saved = localStorage.getItem("truss.sidebar.sections");
@@ -628,10 +674,12 @@ export default function DashboardPage() {
             {view.kind === "home" && (
               <HomeView me={me} plugins={plugins} objects={objects} surfaces={surfaces} setView={setView} />
             )}
+            {view.kind === "chat" && <ChatView me={me} onChanged={refresh} />}
             {view.kind === "plugins" && <PluginsView plugins={plugins} onChanged={refresh} />}
             {view.kind === "marketplace" && <MarketplaceView onChanged={refresh} />}
             {view.kind === "events" && <EventsView />}
             {view.kind === "ai" && <AiView onChanged={refresh} />}
+            {view.kind === "aihub" && <AiHubView onChanged={refresh} />}
             {view.kind === "agents" && <AgentsView onChanged={refresh} />}
             {view.kind === "org" && <OrgView onChanged={refresh} />}
             {view.kind === "goals" && <GoalsView onChanged={refresh} />}
@@ -4168,6 +4216,298 @@ function AutopilotView({ onChanged }: { onChanged: () => Promise<void> }) {
   );
 }
 
+/* ---------------- Phase F: AI Employees hub dashboard ---------------- */
+
+function AiHubView({ onChanged }: { onChanged: () => Promise<void> }) {
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [goals, setGoals] = useState<GoalInfo[]>([]);
+  const [inbox, setInbox] = useState<ReviewInbox | null>(null);
+  const [overview, setOverview] = useState<WorkspaceOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [a, g, ov] = await Promise.all([
+          api<AgentInfo[]>("/api/agents"),
+          api<GoalInfo[]>("/api/org/goals"),
+          api<WorkspaceOverview>("/api/insights/overview"),
+        ]);
+        setAgents(a);
+        setGoals(g);
+        setOverview(ov);
+        try {
+          setInbox(await api<ReviewInbox>("/api/org/review"));
+        } catch {
+          setInbox(null);
+        }
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const active = agents.filter((a) => a.status === "active").length;
+  const activeGoals = goals.filter((g) => g.status === "active");
+  const pending = inbox?.count ?? 0;
+
+  const stat = (label: string, value: string | number, icon: React.ReactNode, tone = "") => (
+    <div className="flex items-center gap-3 rounded-xl border border-border bg-card p-4">
+      <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${tone || "bg-accent-soft text-accent"}`}>
+        {icon}
+      </div>
+      <div>
+        <div className="text-2xl font-bold leading-none">{value}</div>
+        <div className="mt-1 text-xs text-muted">{label}</div>
+      </div>
+    </div>
+  );
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <div className="skeleton h-8 w-48" />
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => <div key={i} className="skeleton h-20" />)}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="flex items-center gap-2 text-xl font-bold">
+            <Bot size={20} /> AI Employees
+          </h1>
+          <p className="mt-1 text-sm text-muted">
+            Your autonomous workforce at a glance — roster, goals, and what needs your review.
+          </p>
+        </div>
+      </div>
+
+      {/* stat cards */}
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {stat("Employees", agents.length, <Users size={18} />)}
+        {stat("Active now", active, <Zap size={18} />, "bg-success/10 text-success")}
+        {stat("Active goals", activeGoals.length, <Target size={18} />)}
+        {stat("Awaiting review", pending, <Inbox size={18} />, pending > 0 ? "bg-warning/10 text-warning" : "")}
+      </div>
+
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        {/* roster */}
+        <section className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Roster</h2>
+          <div className="mt-3 space-y-2">
+            {agents.length === 0 && <p className="text-xs text-muted">No employees yet — hire one from the Employees tab or via Chat.</p>}
+            {agents.slice(0, 6).map((a) => (
+              <div key={a.id} className="flex items-center justify-between rounded-lg border border-border bg-card-2 px-3 py-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-lg">{a.icon || "🤖"}</span>
+                  <div>
+                    <div className="text-sm font-medium">{a.name}</div>
+                    <div className="text-[11px] text-muted">{a.role || "—"}</div>
+                  </div>
+                </div>
+                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                  a.status === "active" ? "bg-success/10 text-success" :
+                  a.status === "terminated" ? "bg-danger/10 text-danger" : "bg-card text-muted"
+                }`}>{a.status}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* goals */}
+        <section className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Goals</h2>
+          <div className="mt-3 space-y-2">
+            {goals.length === 0 && <p className="text-xs text-muted">No goals yet — set one from the Goals tab or via Chat.</p>}
+            {goals.slice(0, 6).map((g) => {
+              const pct = g.target_value > 0 ? Math.min(100, Math.round((g.current_value / g.target_value) * 100)) : 0;
+              return (
+                <div key={g.id} className="rounded-lg border border-border bg-card-2 px-3 py-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">{g.title}</span>
+                    <span className="text-[11px] text-muted">{pct}%</span>
+                  </div>
+                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-border">
+                    <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+
+      {/* overview rollup if available */}
+      {overview && (
+        <div className="mt-4 rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Workspace pulse</h2>
+          <div className="mt-3 grid gap-3 text-center sm:grid-cols-4">
+            <div><div className="text-xl font-bold">{overview.agents_total}</div><div className="text-[11px] text-muted">total agents</div></div>
+            <div><div className="text-xl font-bold">{overview.agents_active}</div><div className="text-[11px] text-muted">active</div></div>
+            <div><div className="text-xl font-bold">{overview.tasks_total ?? "—"}</div><div className="text-[11px] text-muted">tasks</div></div>
+            <div><div className="text-xl font-bold">{activeGoals.length}</div><div className="text-[11px] text-muted">active goals</div></div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Phase F: Chat — the control surface ---------------- */
+
+const CHAT_SUGGESTIONS = [
+  "Hire an AI employee named Scout for lead research",
+  "How many leads do we have?",
+  "Create a goal: close 10 deals this quarter",
+  "Assign a task to review this week's pipeline",
+  "What objects are in my workspace?",
+  "List my AI employees",
+];
+
+function ChatView({ me, onChanged }: { me: Me; onChanged: () => Promise<void> }) {
+  const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string; trace?: ChatResult["trace"] }[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, busy]);
+
+  async function send(text: string) {
+    const msg = text.trim();
+    if (!msg || busy) return;
+    setInput("");
+    setError("");
+    setMessages((m) => [...m, { role: "user", content: msg }]);
+    setBusy(true);
+    try {
+      const history = messages.slice(-10).map((m) => ({ role: m.role, content: m.content }));
+      const res = await api<ChatResult>("/api/ai/chat", {
+        method: "POST",
+        body: { message: msg, history },
+      });
+      setMessages((m) => [...m, { role: "assistant", content: res.reply, trace: res.trace }]);
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      setError(typeof d === "string" ? d : JSON.stringify(d));
+      setMessages((m) => m.slice(0, -1));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto flex h-full max-w-3xl flex-col">
+      <div className="pb-3">
+        <h1 className="flex items-center gap-2 text-xl font-bold">
+          <MessageSquare size={20} /> Chat
+        </h1>
+        <p className="mt-1 text-sm text-muted">
+          Talk to your workspace. Create AI employees, search and edit records, set goals —
+          anything your role ({me.role}) allows.
+        </p>
+      </div>
+
+      {/* message stream */}
+      <div className="flex-1 space-y-4 overflow-y-auto rounded-xl border border-border bg-card p-4">
+        {messages.length === 0 && (
+          <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-soft text-accent">
+              <Bot size={24} />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">What should we do?</p>
+              <p className="mt-1 text-xs text-muted">Try one of these, or type anything.</p>
+            </div>
+            <div className="flex max-w-md flex-wrap justify-center gap-2">
+              {CHAT_SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => send(s)}
+                  className="rounded-full border border-border bg-card-2 px-3 py-1.5 text-xs text-muted transition hover:border-accent-border hover:text-foreground"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {messages.map((m, i) => (
+          <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div
+              className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${
+                m.role === "user"
+                  ? "bg-accent text-on-accent"
+                  : "border border-border bg-card-2 text-foreground"
+              }`}
+            >
+              <p className="whitespace-pre-wrap">{m.content}</p>
+              {m.trace && m.trace.length > 0 && (
+                <div className="mt-2 space-y-1 border-t border-border pt-2">
+                  {m.trace.map((t, j) => (
+                    <div key={j} className="flex items-center gap-1.5 text-[11px] text-faint">
+                      <Zap size={10} />
+                      <span className="font-mono">{t.tool}</span>
+                      {t.result && (t.result as { error?: string }).error ? (
+                        <span className="text-danger">failed</span>
+                      ) : (
+                        <span className="text-success">ok</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {busy && (
+          <div className="flex justify-start">
+            <div className="flex items-center gap-2 rounded-2xl border border-border bg-card-2 px-4 py-2.5 text-sm text-muted">
+              <span className="skeleton h-3 w-16" /> thinking…
+            </div>
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+
+      {error && <p className="mt-2 text-xs text-danger">{error}</p>}
+
+      {/* composer */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(input);
+        }}
+        className="mt-3 flex items-center gap-2"
+      >
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Ask anything — hire, search, create, edit…"
+          className="flex-1 rounded-xl border border-border bg-card px-4 py-2.5 text-sm outline-none transition focus:border-accent"
+        />
+        <button
+          type="submit"
+          disabled={busy || !input.trim()}
+          className="flex items-center gap-1.5 rounded-xl bg-accent px-4 py-2.5 text-sm font-semibold text-on-accent transition disabled:opacity-40"
+        >
+          <Send size={15} /> Send
+        </button>
+      </form>
+    </div>
+  );
+}
+
 /* ---------------- Phase E: Developer portal ---------------- */
 
 function DeveloperView() {
@@ -4697,7 +5037,7 @@ function EventsView() {
 /* ---------------- Appearance / Settings ---------------- */
 
 function SettingsView() {
-  const { theme, resolvedMode, setMode, setAccent, setDensity, setRadius, reset } = useTheme();
+  const { theme, resolvedMode, setMode, setAccent, setDensity, setRadius, setFontFamily, setFontScale, setMotion, reset } = useTheme();
   const [customHex, setCustomHex] = useState("");
 
   const isPreset = ACCENT_PRESETS.some((p) => p.id === theme.accent);
@@ -4834,6 +5174,45 @@ function SettingsView() {
           {(["sharp", "soft", "rounded"] as Radius[]).map((r) => (
             <button key={r} onClick={() => setRadius(r)} className={segBtn(theme.radius === r)}>
               {r[0].toUpperCase() + r.slice(1)}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Font family */}
+      <section className="mt-8">
+        <h2 className="text-sm font-semibold">Font</h2>
+        <p className="mt-0.5 text-xs text-muted">The typeface used across the interface.</p>
+        <div className="mt-3 flex rounded-lg border border-border bg-card p-1">
+          {([["sans", "Sans"], ["serif", "Serif"], ["mono", "Mono"]] as [FontFamily, string][]).map(([f, label]) => (
+            <button key={f} onClick={() => setFontFamily(f)} className={segBtn(theme.fontFamily === f)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Font size */}
+      <section className="mt-8">
+        <h2 className="text-sm font-semibold">Font size</h2>
+        <p className="mt-0.5 text-xs text-muted">Scale all text up or down, independent of density.</p>
+        <div className="mt-3 flex rounded-lg border border-border bg-card p-1">
+          {([["sm", "Small"], ["md", "Medium"], ["lg", "Large"]] as [FontScale, string][]).map(([s, label]) => (
+            <button key={s} onClick={() => setFontScale(s)} className={segBtn(theme.fontScale === s)}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Motion */}
+      <section className="mt-8">
+        <h2 className="text-sm font-semibold">Motion</h2>
+        <p className="mt-0.5 text-xs text-muted">Reduce animations for a calmer, lower-distraction experience.</p>
+        <div className="mt-3 flex rounded-lg border border-border bg-card p-1">
+          {([["full", "Full"], ["reduced", "Reduced"]] as [Motion, string][]).map(([m, label]) => (
+            <button key={m} onClick={() => setMotion(m)} className={segBtn(theme.motion === m)}>
+              {label}
             </button>
           ))}
         </div>

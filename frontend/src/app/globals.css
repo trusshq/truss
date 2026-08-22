@@ -48,14 +48,38 @@
   color-scheme: light;
 }
 
-/* density: scales the rem so all Tailwind spacing follows */
-[data-density="compact"] { font-size: 14.5px; }
-[data-density="comfortable"] { font-size: 16px; }
+/* density: scales the rem so all Tailwind spacing follows.
+   Multiplied by --fontscale-factor (set by data-fontscale below). */
+[data-density="compact"] { font-size: calc(14.5px * var(--fontscale-factor, 1)); }
+[data-density="comfortable"] { font-size: calc(16px * var(--fontscale-factor, 1)); }
 
 /* radius: sharp / soft / rounded */
 [data-radius="sharp"] { --radius-factor: 0; }
 [data-radius="soft"] { --radius-factor: 1; }
 [data-radius="rounded"] { --radius-factor: 1.8; }
+
+/* font family: sans (default) / serif / mono */
+[data-font="sans"] { --font-sans: var(--font-geist-sans); }
+[data-font="serif"] { --font-sans: Georgia, "Times New Roman", serif; }
+[data-font="mono"] { --font-sans: var(--font-geist-mono), ui-monospace, monospace; }
+
+/* font scale: independent base size (multiplies with density) */
+[data-fontscale="sm"] { --fontscale-factor: 0.9; }
+[data-fontscale="md"] { --fontscale-factor: 1; }
+[data-fontscale="lg"] { --fontscale-factor: 1.12; }
+
+/* motion: full (default) / reduced — kills decorative animation */
+[data-motion="reduced"] .view-in,
+[data-motion="reduced"] .toast-in,
+[data-motion="reduced"] .palette-backdrop,
+[data-motion="reduced"] .palette-panel,
+[data-motion="reduced"] .animate-rise,
+[data-motion="reduced"] .skeleton {
+  animation: none;
+}
+[data-motion="reduced"] .marquee-track { animation: none; }
+[data-motion="reduced"] .meteor { animation: none; opacity: 0; }
+[data-motion="reduced"] .load-path { animation: none; opacity: 1; }
 
 @theme inline {
   --color-background: var(--background);

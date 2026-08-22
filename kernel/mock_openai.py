@@ -44,42 +44,56 @@ class Handler(BaseHTTPRequestHandler):
                 break
         wants_analytics = "how many" in last_user or "analytics" in last_user
 
+        def _tc(call_id, name, args):
+            return {
+                "id": call_id, "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)},
+            }
+
         if not has_tool_result:
-            # first turn: request a tool call
-            if wants_analytics:
-                tool_call = {
-                    "id": "call_mock_analytics",
-                    "type": "function",
-                    "function": {
-                        "name": "kernel__analytics",
-                        "arguments": json.dumps({"object": "lead", "metric": "count"}),
-                    },
-                }
-                content = None
+            # first turn: request a tool call, routed by intent keywords
+            if "hire" in last_user and ("agent" in last_user or "employee" in last_user):
+                tool_call = _tc("call_mock_hire", "kernel__hire_agent",
+                                {"name": "Mock Hire", "role": "Assistant", "icon": "🤖"})
+            elif "assign" in last_user and "task" in last_user:
+                tool_call = _tc("call_mock_assign", "kernel__assign_task",
+                                {"agent_id": "00000000-0000-0000-0000-000000000000", "title": "Mock task"})
+            elif "goal" in last_user and ("create" in last_user or "set" in last_user or "add" in last_user):
+                tool_call = _tc("call_mock_goal", "kernel__create_goal",
+                                {"title": "Mock goal", "metric": "leads", "target_value": 10})
+            elif "list objects" in last_user or "what objects" in last_user:
+                tool_call = _tc("call_mock_objs", "kernel__list_objects", {})
+            elif "list agents" in last_user or "who are" in last_user or "employees" in last_user:
+                tool_call = _tc("call_mock_agents", "kernel__list_agents", {})
+            elif wants_analytics:
+                tool_call = _tc("call_mock_analytics", "kernel__analytics",
+                                {"object": "lead", "metric": "count"})
             else:
-                tool_call = {
-                    "id": "call_mock_1",
-                    "type": "function",
-                    "function": {
-                        "name": "truss_crm__create_lead",
-                        "arguments": json.dumps({
-                            "name": "AI Test Lead",
-                            "email": "ai-test@example.com",
-                            "source": "Website",
-                            "status": "New",
-                        }),
-                    },
-                }
-                content = None
+                tool_call = _tc("call_mock_1", "truss_crm__create_lead", {
+                    "name": "AI Test Lead",
+                    "email": "ai-test@example.com",
+                    "source": "Website",
+                    "status": "New",
+                })
             choice_msg = {
                 "role": "assistant",
-                "content": content,
+                "content": None,
                 "tool_calls": [tool_call],
             }
         else:
             # second turn: final answer
             if wants_analytics:
                 answer = "You have 5 leads in total."
+            elif "hire" in last_user:
+                answer = "Done — I hired the AI employee 'Mock Hire'."
+            elif "assign" in last_user and "task" in last_user:
+                answer = "Done — I assigned the task (pending approval)."
+            elif "goal" in last_user:
+                answer = "Done — I created the goal 'Mock goal'."
+            elif "list objects" in last_user or "what objects" in last_user:
+                answer = "Here are the objects in your workspace."
+            elif "list agents" in last_user or "who are" in last_user or "employees" in last_user:
+                answer = "Here are your AI employees."
             else:
                 answer = "Done — I created the lead 'AI Test Lead' (ai-test@example.com) with source Website."
             choice_msg = {

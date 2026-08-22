@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from truss_kernel.ai import client as ai_client
 from truss_kernel.ai.vault import decrypt_secret
 from truss_kernel.models.ai import AiKey
+from truss_kernel.models.agent import Agent, AgentStatus, AgentTask, TaskStatus
+from truss_kernel.models.metadata import FieldDef, ObjectDef
 from truss_kernel.models.plugin import PluginInstall
 from truss_kernel.plugins.registry import registry
 from truss_kernel.services import analytics
@@ -26,9 +28,19 @@ logger = logging.getLogger("truss.ai")
 
 MAX_STEPS = 6
 
+# Roles allowed to use admin-gated control tools (hire agents, etc.)
+ADMIN_ROLES = {"owner", "admin"}
+# Roles allowed to mutate (create/update records, assign tasks, create goals)
+MUTATE_ROLES = {"owner", "admin", "member"}
+
 SYSTEM_PROMPT = """You are the Truss workspace agent. You help the user manage their
-business data by calling the provided tools. Rules:
+business data AND the workspace itself by calling the provided tools. Rules:
 - Use tools whenever the user asks to create, update, or look up records.
+- You can also manage the workspace: hire AI employees (kernel__hire_agent),
+  assign them tasks (kernel__assign_task), create goals (kernel__create_goal),
+  and create/update records in ANY object (kernel__create_record /
+  kernel__update_record). Call kernel__list_objects first to learn valid
+  object slugs and fields, and kernel__list_agents to find agent ids.
 - Prefer calling a tool over guessing; if a tool call fails, read the error and retry once with corrected arguments.
 - Keep replies short and concrete. After tool calls, summarize what happened.
 - Never invent record ids or data you did not retrieve."""
@@ -36,11 +48,14 @@ business data by calling the provided tools. Rules:
 
 # ---------- tool collection ----------
 
-async def collect_tools(db: AsyncSession, tenant_id: uuid.UUID) -> tuple[list[dict], dict[str, dict]]:
-    """Build OpenAI function schemas from enabled plugins.
+async def collect_tools(db: AsyncSession, tenant_id: uuid.UUID, role: str = "member") -> tuple[list[dict], dict[str, dict]]:
+    """Build OpenAI function schemas from enabled plugins + kernel control tools.
 
     Returns (openai_tools, index) where index maps function name -> spec dict
     carrying the backing action/object for execution.
+
+    `role` gates the control tools: admin-gated tools (hire agent) are only
+    offered to owner/admin; mutation tools are offered to member+.
     """
     installs = (await db.execute(
         select(PluginInstall).where(
@@ -123,6 +138,126 @@ async def collect_tools(db: AsyncSession, tenant_id: uuid.UUID) -> tuple[list[di
         "action": "analytics",
         "object": None,
     }
+
+    # ---- Kernel control tools (Phase F): let the chat agent manage the
+    # workspace itself — hire agents, assign tasks, create goals, and CRUD
+    # records on ANY object. Gated by the invoking user's role. ----
+
+    def _add_control(fn_name: str, description: str, properties: dict,
+                     required: list[str], action: str) -> None:
+        openai_tools.append({
+            "type": "function",
+            "function": {
+                "name": fn_name,
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            },
+        })
+        index[fn_name] = {
+            "plugin_id": "kernel",
+            "tool_slug": fn_name,
+            "action": action,
+            "object": None,
+        }
+
+    # Read tools: available to everyone (viewer+)
+    _add_control(
+        "kernel__list_objects",
+        "List all data objects (tables) available in this workspace, with their slugs and fields. "
+        "Use this first to discover what objects exist before creating or querying records.",
+        {}, [],
+        "list_objects",
+    )
+    _add_control(
+        "kernel__list_agents",
+        "List all AI employees (agents) in this workspace with their id, name, role, and status.",
+        {}, [],
+        "list_agents",
+    )
+    _add_control(
+        "kernel__search_records",
+        "Search records across a specific object by free text. Arguments: object (required slug), "
+        "search (optional text), limit (optional, default 10).",
+        {
+            "object": {"type": "string", "description": "Object slug, e.g. 'lead'"},
+            "search": {"type": "string", "description": "Free-text search"},
+            "limit": {"type": "integer", "description": "Max results (default 10)"},
+        },
+        ["object"],
+        "search_records",
+    )
+
+    # Mutation tools: member+
+    if role in MUTATE_ROLES:
+        _add_control(
+            "kernel__create_record",
+            "Create a new record in any object. Arguments: object (required slug), data (object of "
+            "field slug -> value). Use kernel__list_objects first to learn valid fields.",
+            {
+                "object": {"type": "string", "description": "Object slug, e.g. 'lead'"},
+                "data": {"type": "object", "description": "Field values keyed by field slug"},
+            },
+            ["object", "data"],
+            "create_record_any",
+        )
+        _add_control(
+            "kernel__update_record",
+            "Update an existing record. Arguments: object (required slug), record_id (required UUID), "
+            "data (object of field slug -> new value).",
+            {
+                "object": {"type": "string", "description": "Object slug"},
+                "record_id": {"type": "string", "description": "Record UUID to update"},
+                "data": {"type": "object", "description": "Field values to change"},
+            },
+            ["object", "record_id", "data"],
+            "update_record_any",
+        )
+        _add_control(
+            "kernel__assign_task",
+            "Assign a task to an AI employee. Arguments: agent_id (required UUID), title (required), "
+            "description (optional). The task will need human approval before running.",
+            {
+                "agent_id": {"type": "string", "description": "Agent UUID"},
+                "title": {"type": "string", "description": "Task title"},
+                "description": {"type": "string", "description": "Task details"},
+            },
+            ["agent_id", "title"],
+            "assign_task",
+        )
+        _add_control(
+            "kernel__create_goal",
+            "Create a goal. Arguments: title (required), metric (optional), target_value (optional number), "
+            "owner_agent_id (optional agent UUID; if omitted the goal is owned by the current user).",
+            {
+                "title": {"type": "string", "description": "Goal title"},
+                "metric": {"type": "string", "description": "What is being measured"},
+                "target_value": {"type": "number", "description": "Numeric target"},
+                "owner_agent_id": {"type": "string", "description": "Optional owning agent UUID"},
+            },
+            ["title"],
+            "create_goal",
+        )
+
+    # Admin tools: owner/admin only
+    if role in ADMIN_ROLES:
+        _add_control(
+            "kernel__hire_agent",
+            "Hire a new AI employee. Arguments: name (required), role (optional job title), "
+            "icon (optional emoji), permission_role ('member' or 'viewer', default 'member').",
+            {
+                "name": {"type": "string", "description": "Agent name"},
+                "role": {"type": "string", "description": "Job title / role description"},
+                "icon": {"type": "string", "description": "Emoji icon"},
+                "permission_role": {"type": "string", "description": "'member' or 'viewer'"},
+            },
+            ["name"],
+            "hire_agent",
+        )
+
     return openai_tools, index
 
 
@@ -144,6 +279,155 @@ async def _execute_tool(db: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UU
             return await analytics.run_query(db, tenant_id, dict(args))
         except analytics.AnalyticsError as e:
             return {"error": str(e)}
+
+    # ---- Phase F kernel control actions ----
+    if action == "list_objects":
+        objs = (await db.execute(
+            select(ObjectDef).where(ObjectDef.tenant_id == tenant_id).order_by(ObjectDef.slug)
+        )).scalars().all()
+        out = []
+        for o in objs:
+            fields = (await db.execute(
+                select(FieldDef).where(FieldDef.object_id == o.id).order_by(FieldDef.position)
+            )).scalars().all()
+            out.append({
+                "slug": o.slug, "name": o.name, "name_plural": o.name_plural,
+                "fields": [{"slug": f.slug, "name": f.name, "type": f.type, "required": f.required} for f in fields],
+            })
+        return {"objects": out, "total": len(out)}
+
+    if action == "list_agents":
+        agents = (await db.execute(
+            select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.created_at)
+        )).scalars().all()
+        return {"agents": [
+            {"id": str(a.id), "name": a.name, "role": a.role, "icon": a.icon,
+             "status": a.status.value, "permission_role": a.permission_role}
+            for a in agents
+        ], "total": len(agents)}
+
+    if action == "search_records":
+        if not object_slug:
+            return {"error": "object is required"}
+        try:
+            obj = await svc.get_object(db, tenant_id, object_slug)
+        except svc.ObjectNotFound as e:
+            return {"error": str(e)}
+        total, rows = await svc.query_records(
+            db, tenant_id, obj, search=args.get("search"), limit=int(args.get("limit", 10)),
+        )
+        return {"total": total, "items": [svc.rec_to_dict(r) for r in rows]}
+
+    if action == "create_record_any":
+        if not object_slug:
+            return {"error": "object is required"}
+        try:
+            obj = await svc.get_object(db, tenant_id, object_slug)
+        except svc.ObjectNotFound as e:
+            return {"error": str(e)}
+        data = args.get("data") or {}
+        if not isinstance(data, dict):
+            return {"error": "data must be an object of field slug -> value"}
+        try:
+            rec = await svc.create_record(db, tenant_id, user_id, obj, data, actor_type=actor_type)
+            await db.commit()
+            return {"created": svc.rec_to_dict(rec)}
+        except svc.ValidationError as e:
+            return {"error": f"validation failed: {e}"}
+
+    if action == "update_record_any":
+        if not object_slug:
+            return {"error": "object is required"}
+        record_id = args.get("record_id")
+        if not record_id:
+            return {"error": "record_id is required"}
+        try:
+            obj = await svc.get_object(db, tenant_id, object_slug)
+        except svc.ObjectNotFound as e:
+            return {"error": str(e)}
+        data = args.get("data") or {}
+        if not isinstance(data, dict):
+            return {"error": "data must be an object of field slug -> value"}
+        try:
+            rec = await svc.update_record(db, tenant_id, user_id, obj, uuid.UUID(str(record_id)), data, actor_type=actor_type)
+            await db.commit()
+            return {"updated": svc.rec_to_dict(rec)}
+        except svc.RecordNotFound as e:
+            return {"error": str(e)}
+        except svc.ValidationError as e:
+            return {"error": f"validation failed: {e}"}
+        except ValueError:
+            return {"error": "record_id is not a valid UUID"}
+
+    if action == "assign_task":
+        agent_id = args.get("agent_id")
+        title = args.get("title")
+        if not agent_id or not title:
+            return {"error": "agent_id and title are required"}
+        try:
+            agent = (await db.execute(select(Agent).where(
+                Agent.id == uuid.UUID(str(agent_id)), Agent.tenant_id == tenant_id
+            ))).scalar_one_or_none()
+        except ValueError:
+            return {"error": "agent_id is not a valid UUID"}
+        if agent is None:
+            return {"error": "agent not found"}
+        t = AgentTask(
+            tenant_id=tenant_id, agent_id=agent.id, title=title,
+            description=args.get("description") or "",
+            needs_review=True, status=TaskStatus.proposed, created_by=user_id,
+        )
+        db.add(t)
+        await db.commit()
+        await db.refresh(t)
+        return {"assigned": {"task_id": str(t.id), "agent": agent.name, "title": title,
+                             "status": "proposed (needs approval)"}}
+
+    if action == "create_goal":
+        from truss_kernel.agents import org as org_svc
+        title = args.get("title")
+        if not title:
+            return {"error": "title is required"}
+        owner_agent_id = None
+        if args.get("owner_agent_id"):
+            try:
+                owner_agent_id = uuid.UUID(str(args["owner_agent_id"]))
+            except ValueError:
+                return {"error": "owner_agent_id is not a valid UUID"}
+        try:
+            g = await org_svc.create_goal(
+                db, tenant_id, title=title, metric=args.get("metric") or "",
+                target_value=float(args.get("target_value") or 0),
+                owner_agent_id=owner_agent_id,
+                owner_user_id=None if owner_agent_id else user_id,
+                created_by=user_id,
+            )
+            await db.commit()
+            return {"created_goal": {"id": str(g.id), "title": g.title}}
+        except org_svc.OrgError as e:
+            return {"error": str(e)}
+
+    if action == "hire_agent":
+        name = args.get("name")
+        if not name:
+            return {"error": "name is required"}
+        clash = (await db.execute(select(Agent).where(
+            Agent.tenant_id == tenant_id, Agent.name == name
+        ))).scalar_one_or_none()
+        if clash:
+            return {"error": f"an agent named '{name}' already exists"}
+        perm = args.get("permission_role") or "member"
+        if perm not in ("member", "viewer"):
+            perm = "member"
+        a = Agent(
+            tenant_id=tenant_id, name=name, role=args.get("role") or "",
+            icon=args.get("icon") or "🤖", permission_role=perm,
+            status=AgentStatus.active,
+        )
+        db.add(a)
+        await db.commit()
+        await db.refresh(a)
+        return {"hired": {"id": str(a.id), "name": a.name, "role": a.role, "status": a.status.value}}
 
     if action in ("create_record", "update_record", "query_records"):
         if not object_slug:
@@ -193,10 +477,14 @@ async def _execute_tool(db: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UU
 
 async def run_agent(db: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UUID,
                     key: AiKey, user_message: str,
-                    history: list[dict] | None = None) -> dict:
-    """Run the BYOK agent loop. Returns {reply, trace, steps, model}."""
+                    history: list[dict] | None = None,
+                    role: str = "member") -> dict:
+    """Run the BYOK agent loop. Returns {reply, trace, steps, model}.
+
+    `role` gates which kernel control tools are offered to the model.
+    """
     api_key = decrypt_secret(key.api_key_enc) if key.api_key_enc else ""
-    openai_tools, index = await collect_tools(db, tenant_id)
+    openai_tools, index = await collect_tools(db, tenant_id, role=role)
 
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for h in (history or []):

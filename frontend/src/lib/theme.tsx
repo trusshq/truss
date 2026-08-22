@@ -21,6 +21,9 @@ import {
 export type ThemeMode = "light" | "dark" | "system";
 export type Density = "comfortable" | "compact";
 export type Radius = "sharp" | "soft" | "rounded";
+export type FontFamily = "sans" | "serif" | "mono";
+export type FontScale = "sm" | "md" | "lg";
+export type Motion = "full" | "reduced";
 
 export interface ThemeState {
   mode: ThemeMode;
@@ -28,6 +31,12 @@ export interface ThemeState {
   accent: string;
   density: Density;
   radius: Radius;
+  /** UI typeface family */
+  fontFamily: FontFamily;
+  /** base font-size scale (independent of density) */
+  fontScale: FontScale;
+  /** animation preference */
+  motion: Motion;
 }
 
 export const DEFAULT_THEME: ThemeState = {
@@ -35,6 +44,9 @@ export const DEFAULT_THEME: ThemeState = {
   accent: "mono",
   density: "comfortable",
   radius: "soft",
+  fontFamily: "sans",
+  fontScale: "md",
+  motion: "full",
 };
 
 /** Curated accent presets. "mono" keeps everything black & white. */
@@ -57,6 +69,9 @@ interface ThemeContextValue {
   setAccent: (a: string) => void;
   setDensity: (d: Density) => void;
   setRadius: (r: Radius) => void;
+  setFontFamily: (f: FontFamily) => void;
+  setFontScale: (s: FontScale) => void;
+  setMotion: (m: Motion) => void;
   reset: () => void;
 }
 
@@ -109,6 +124,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     root.setAttribute("data-theme", resolvedMode);
     root.setAttribute("data-density", theme.density);
     root.setAttribute("data-radius", theme.radius);
+    root.setAttribute("data-font", theme.fontFamily);
+    root.setAttribute("data-fontscale", theme.fontScale);
+    root.setAttribute("data-motion", theme.motion);
 
     const color = accentColor(theme.accent);
     if (color) {
@@ -131,11 +149,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setAccent = useCallback((a: string) => setTheme((t) => ({ ...t, accent: a })), []);
   const setDensity = useCallback((d: Density) => setTheme((t) => ({ ...t, density: d })), []);
   const setRadius = useCallback((r: Radius) => setTheme((t) => ({ ...t, radius: r })), []);
+  const setFontFamily = useCallback((f: FontFamily) => setTheme((t) => ({ ...t, fontFamily: f })), []);
+  const setFontScale = useCallback((s: FontScale) => setTheme((t) => ({ ...t, fontScale: s })), []);
+  const setMotion = useCallback((m: Motion) => setTheme((t) => ({ ...t, motion: m })), []);
   const reset = useCallback(() => setTheme(DEFAULT_THEME), []);
 
   const value = useMemo(
-    () => ({ theme, resolvedMode, setMode, setAccent, setDensity, setRadius, reset }),
-    [theme, resolvedMode, setMode, setAccent, setDensity, setRadius, reset]
+    () => ({ theme, resolvedMode, setMode, setAccent, setDensity, setRadius, setFontFamily, setFontScale, setMotion, reset }),
+    [theme, resolvedMode, setMode, setAccent, setDensity, setRadius, setFontFamily, setFontScale, setMotion, reset]
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

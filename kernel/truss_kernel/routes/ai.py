@@ -139,7 +139,8 @@ async def chat(body: ChatIn, auth: AuthContext = Depends(require_member), db: As
     history = [{"role": m.role, "content": m.content} for m in body.history[-10:]]
     try:
         result = await agent_mod.run_agent(
-            db, auth.tenant_id, auth.user_id, key, body.message, history=history
+            db, auth.tenant_id, auth.user_id, key, body.message,
+            history=history, role=auth.role.value,
         )
     except ai_client.ProviderError as e:
         raise HTTPException(502, str(e)) from e
