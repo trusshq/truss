@@ -194,6 +194,69 @@ body {
   animation-delay: var(--delay, 0s);
 }
 
+/* ============================================================
+   Dashboard UI polish
+   ============================================================ */
+
+/* view transition: subtle rise when switching views */
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.view-in {
+  animation: view-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* toast slide-in from bottom-right */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.toast-in {
+  animation: toast-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* skeleton shimmer for loading states */
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--card) 25%,
+    var(--card-2) 50%,
+    var(--card) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: var(--radius-md);
+}
+
+/* kanban drag ghost lift */
+.kanban-card {
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.kanban-card:hover {
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.25);
+}
+.kanban-card.dragging {
+  opacity: 0.4;
+  transform: rotate(1.5deg) scale(0.98);
+}
+
+/* command palette backdrop */
+@keyframes palette-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes palette-panel {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.palette-backdrop { animation: palette-in 0.15s ease; }
+.palette-panel { animation: palette-panel 0.18s cubic-bezier(0.16, 1, 0.3, 1); }
+
 /* respect users who prefer less motion */
 @media (prefers-reduced-motion: reduce) {
   .truss-member, .truss-node, .animate-rise {
@@ -203,4 +266,6 @@ body {
   .marquee-track { animation: none; }
   .load-path { animation: none; opacity: 1; }
   .meteor { animation: none; opacity: 0; }
+  .view-in, .toast-in, .palette-backdrop, .palette-panel { animation: none; }
+  .skeleton { animation: none; }
 }

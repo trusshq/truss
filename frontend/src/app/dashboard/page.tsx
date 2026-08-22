@@ -1,22 +1,34 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  Activity,
   Bot,
+  Boxes,
   Cable,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Cog,
+  Command,
+  Database,
+  Home,
+  Info,
   LayoutGrid,
   LogOut,
   Monitor,
   Moon,
   Palette,
+  Pencil,
   Plug,
   Puzzle,
   RotateCcw,
+  Search,
   Store,
   Sun,
+  Trash2,
+  X,
   Zap,
 } from "lucide-react";
 import {
@@ -35,6 +47,7 @@ import {
 import { ACCENT_PRESETS, useTheme, type Density, type Radius, type ThemeMode } from "@/lib/theme";
 
 type View =
+  | { kind: "home" }
   | { kind: "object"; slug: string }
   | { kind: "kanban"; slug: string; object: string; groupBy: string }
   | { kind: "plugins" }
@@ -45,13 +58,101 @@ type View =
   | { kind: "connectors" }
   | { kind: "settings" };
 
+/* ---------------- Toast store (module-level — any view can toast) ---------------- */
+
+type ToastMsg = { id: number; message: string; kind: "success" | "error" | "info" };
+let toastSeq = 0;
+const toastListeners = new Set<(t: ToastMsg) => void>();
+
+function toast(message: string, kind: ToastMsg["kind"] = "info") {
+  const t = { id: ++toastSeq, message, kind };
+  toastListeners.forEach((l) => l(t));
+}
+
+function Toaster() {
+  const [toasts, setToasts] = useState<ToastMsg[]>([]);
+  useEffect(() => {
+    const listener = (t: ToastMsg) => {
+      setToasts((prev) => [...prev.slice(-3), t]);
+      setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== t.id)), 3500);
+    };
+    toastListeners.add(listener);
+    return () => {
+      toastListeners.delete(listener);
+    };
+  }, []);
+  return (
+    <div className="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col gap-2">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`toast-in pointer-events-auto flex items-center gap-2 rounded-lg border bg-card px-4 py-2.5 text-sm shadow-xl ${
+            t.kind === "success"
+              ? "border-success/40 text-success"
+              : t.kind === "error"
+                ? "border-danger/40 text-danger"
+                : "border-border text-foreground"
+          }`}
+        >
+          {t.kind === "success" ? <Check size={14} /> : t.kind === "error" ? <X size={14} /> : <Info size={14} />}
+          <span className="text-foreground">{t.message}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------- Sidebar nav item ---------------- */
+
+function NavItem({
+  active,
+  onClick,
+  icon,
+  label,
+  badge,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  badge?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`relative flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
+        active ? "bg-accent-soft font-medium text-accent" : "hover:bg-card"
+      }`}
+    >
+      {active && <span className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent" />}
+      {icon}
+      <span className="flex-1 truncate">{label}</span>
+      {badge && <span className="rounded-md bg-background px-1.5 py-0.5 text-[10px] text-muted">{badge}</span>}
+    </button>
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [me, setMe] = useState<Me | null>(null);
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [objects, setObjects] = useState<ObjectDef[]>([]);
-  const [view, setView] = useState<View>({ kind: "plugins" });
+  const [view, setView] = useState<View>({ kind: "home" });
   const [bootError, setBootError] = useState("");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  // Ctrl/Cmd+K command palette
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+      if (e.key === "Escape") setPaletteOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const refresh = useCallback(async () => {
     const [p, o] = await Promise.all([
@@ -121,93 +222,62 @@ export default function DashboardPage() {
       <aside className="flex w-60 shrink-0 flex-col border-r border-border bg-card/50">
         <div className="flex items-center gap-2 border-b border-border px-4 py-4">
           <span className="text-xl">🏗️</span>
-          <div>
+          <div className="min-w-0">
             <div className="text-sm font-bold leading-tight">Truss</div>
-            <div className="text-[11px] text-muted">{me.tenant_name}</div>
+            <div className="truncate text-[11px] text-muted">{me.tenant_name}</div>
           </div>
         </div>
 
+        {/* command palette trigger */}
+        <button
+          onClick={() => setPaletteOpen(true)}
+          className="mx-2 mt-2 flex items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5 text-xs text-muted transition hover:border-border-strong hover:text-foreground"
+        >
+          <Search size={13} />
+          <span className="flex-1 text-left">Search or jump to…</span>
+          <kbd className="flex items-center gap-0.5 rounded border border-border px-1 py-0.5 font-mono text-[10px]">
+            <Command size={9} />K
+          </kbd>
+        </button>
+
         <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
-          <div className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted">Apps</div>
+          <NavItem
+            active={view.kind === "home"}
+            onClick={() => setView({ kind: "home" })}
+            icon={<Home size={15} />}
+            label="Home"
+          />
+
+          <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted">Apps</div>
           {surfaces.length === 0 && (
             <div className="px-2 py-1 text-xs text-muted">Install a plugin to see its apps →</div>
           )}
           {surfaces.map((s) => (
-            <button
+            <NavItem
               key={s.slug}
+              active={
+                (view.kind === "object" && view.slug === s.object && s.view === "table") ||
+                (view.kind === "kanban" && view.slug === s.slug)
+              }
               onClick={() =>
                 s.view === "kanban" && s.groupBy
                   ? setView({ kind: "kanban", slug: s.slug, object: s.object!, groupBy: s.groupBy })
                   : setView({ kind: "object", slug: s.object! })
               }
-              className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-                (view.kind === "object" && view.slug === s.object && s.view === "table") ||
-                (view.kind === "kanban" && view.slug === s.slug)
-                  ? "bg-accent-soft text-accent"
-                  : "hover:bg-card"
-              }`}
-            >
-              <span>{s.icon}</span> {s.label}
-            </button>
+              icon={<span className="text-[13px] leading-none">{s.icon}</span>}
+              label={s.label}
+              badge={s.view === "kanban" ? "board" : undefined}
+            />
           ))}
 
           <div className="px-2 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-muted">Platform</div>
-          <button
-            onClick={() => setView({ kind: "plugins" })}
-            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-              view.kind === "plugins" ? "bg-accent-soft text-accent" : "hover:bg-card"
-            }`}
-          >
-            <Puzzle size={15} /> Plugins
-          </button>
-          <button
-            onClick={() => setView({ kind: "marketplace" })}
-            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-              view.kind === "marketplace" ? "bg-accent-soft text-accent" : "hover:bg-card"
-            }`}
-          >
-            <Store size={15} /> Marketplace
-          </button>
-          <button
-            onClick={() => setView({ kind: "ai" })}
-            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-              view.kind === "ai" ? "bg-accent-soft text-accent" : "hover:bg-card"
-            }`}
-          >
-            <Bot size={15} /> AI Agent
-          </button>
-          <button
-            onClick={() => setView({ kind: "automations" })}
-            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-              view.kind === "automations" ? "bg-accent-soft text-accent" : "hover:bg-card"
-            }`}
-          >
-            <Cog size={15} /> Automations
-          </button>
-          <button
-            onClick={() => setView({ kind: "connectors" })}
-            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-              view.kind === "connectors" ? "bg-accent-soft text-accent" : "hover:bg-card"
-            }`}
-          >
-            <Cable size={15} /> Connectors
-          </button>
-          <button
-            onClick={() => setView({ kind: "events" })}
-            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-              view.kind === "events" ? "bg-accent-soft text-accent" : "hover:bg-card"
-            }`}
-          >
-            <Zap size={15} /> Events
-          </button>
-          <button
-            onClick={() => setView({ kind: "settings" })}
-            className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
-              view.kind === "settings" ? "bg-accent-soft text-accent" : "hover:bg-card"
-            }`}
-          >
-            <Palette size={15} /> Appearance
-          </button>
+          <NavItem active={view.kind === "plugins"} onClick={() => setView({ kind: "plugins" })} icon={<Puzzle size={15} />} label="Plugins" />
+          <NavItem active={view.kind === "marketplace"} onClick={() => setView({ kind: "marketplace" })} icon={<Store size={15} />} label="Marketplace" />
+          <NavItem active={view.kind === "ai"} onClick={() => setView({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
+          <NavItem active={view.kind === "automations"} onClick={() => setView({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
+          <NavItem active={view.kind === "connectors"} onClick={() => setView({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
+          <NavItem active={view.kind === "events"} onClick={() => setView({ kind: "events" })} icon={<Zap size={15} />} label="Events" />
+          <NavItem active={view.kind === "settings"} onClick={() => setView({ kind: "settings" })} icon={<Palette size={15} />} label="Appearance" />
         </nav>
 
         <div className="border-t border-border p-3 text-xs">
@@ -226,28 +296,310 @@ export default function DashboardPage() {
 
       {/* Main */}
       <section className="min-w-0 flex-1 overflow-y-auto p-6">
-        {view.kind === "plugins" && <PluginsView plugins={plugins} onChanged={refresh} />}
-        {view.kind === "marketplace" && <MarketplaceView onChanged={refresh} />}
-        {view.kind === "events" && <EventsView />}
-        {view.kind === "ai" && <AiView onChanged={refresh} />}
-        {view.kind === "automations" && <AutomationsView />}
-        {view.kind === "connectors" && <ConnectorsView />}
-        {view.kind === "settings" && <SettingsView />}
-        {view.kind === "object" && (
-          <ObjectView
-            object={objects.find((o) => o.slug === view.slug) ?? null}
-            onChanged={refresh}
-          />
-        )}
-        {view.kind === "kanban" && (
-          <KanbanView
-            object={objects.find((o) => o.slug === view.object) ?? null}
-            groupBy={view.groupBy}
-            onChanged={refresh}
-          />
-        )}
+        <div key={JSON.stringify(view)} className="view-in">
+          {view.kind === "home" && (
+            <HomeView me={me} plugins={plugins} objects={objects} surfaces={surfaces} setView={setView} />
+          )}
+          {view.kind === "plugins" && <PluginsView plugins={plugins} onChanged={refresh} />}
+          {view.kind === "marketplace" && <MarketplaceView onChanged={refresh} />}
+          {view.kind === "events" && <EventsView />}
+          {view.kind === "ai" && <AiView onChanged={refresh} />}
+          {view.kind === "automations" && <AutomationsView />}
+          {view.kind === "connectors" && <ConnectorsView />}
+          {view.kind === "settings" && <SettingsView />}
+          {view.kind === "object" && (
+            <ObjectView
+              object={objects.find((o) => o.slug === view.slug) ?? null}
+              onChanged={refresh}
+            />
+          )}
+          {view.kind === "kanban" && (
+            <KanbanView
+              object={objects.find((o) => o.slug === view.object) ?? null}
+              groupBy={view.groupBy}
+              onChanged={refresh}
+            />
+          )}
+        </div>
       </section>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        surfaces={surfaces}
+        setView={(v) => {
+          setView(v);
+          setPaletteOpen(false);
+        }}
+      />
+      <Toaster />
     </main>
+  );
+}
+
+/* ---------------- Home (overview) ---------------- */
+
+function HomeView({
+  me,
+  plugins,
+  objects,
+  surfaces,
+  setView,
+}: {
+  me: Me;
+  plugins: PluginInfo[];
+  objects: ObjectDef[];
+  surfaces: { label: string; icon: string; object?: string; slug: string; view: string; groupBy?: string }[];
+  setView: (v: View) => void;
+}) {
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [recentEvents, setRecentEvents] = useState<
+    { id: string; type: string; created_at: string }[]
+  >([]);
+
+  const enabled = plugins.filter((p) => p.installed && p.enabled);
+
+  useEffect(() => {
+    // record counts per object (parallel, capped)
+    Promise.all(
+      objects.slice(0, 12).map(async (o) => {
+        try {
+          const res = await api<{ total: number }>(`/api/records/${o.slug}?limit=1`);
+          return [o.slug, res.total] as const;
+        } catch {
+          return [o.slug, 0] as const;
+        }
+      })
+    ).then((pairs) => setCounts(Object.fromEntries(pairs)));
+    api<{ id: string; type: string; created_at: string }[]>("/api/events?limit=6")
+      .then(setRecentEvents)
+      .catch(() => {});
+  }, [objects]);
+
+  const totalRecords = Object.values(counts).reduce((a, b) => a + b, 0);
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+
+  return (
+    <div className="mx-auto max-w-5xl">
+      <h1 className="text-2xl font-bold">
+        {greeting}, {me.email.split("@")[0]} 👋
+      </h1>
+      <p className="mt-1 text-sm text-muted">
+        {me.tenant_name} · {enabled.length} active plugin{enabled.length === 1 ? "" : "s"} ·{" "}
+        {totalRecords} records across {objects.length} objects
+      </p>
+
+      {/* stat cards */}
+      <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <button
+          onClick={() => setView({ kind: "plugins" })}
+          className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong"
+        >
+          <div className="flex items-center gap-2 text-xs text-muted">
+            <Puzzle size={13} /> Active plugins
+          </div>
+          <div className="mt-2 text-2xl font-bold">{enabled.length}</div>
+          <div className="mt-1 text-[11px] text-muted">{plugins.length - enabled.length} available</div>
+        </button>
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="flex items-center gap-2 text-xs text-muted">
+            <Database size={13} /> Records
+          </div>
+          <div className="mt-2 text-2xl font-bold">{totalRecords}</div>
+          <div className="mt-1 text-[11px] text-muted">{objects.length} object types</div>
+        </div>
+        <button
+          onClick={() => setView({ kind: "events" })}
+          className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong"
+        >
+          <div className="flex items-center gap-2 text-xs text-muted">
+            <Activity size={13} /> Recent activity
+          </div>
+          <div className="mt-2 truncate text-sm font-semibold text-accent">
+            {recentEvents[0]?.type ?? "—"}
+          </div>
+          <div className="mt-1 text-[11px] text-muted">
+            {recentEvents[0] ? new Date(recentEvents[0].created_at).toLocaleString() : "no events yet"}
+          </div>
+        </button>
+        <button
+          onClick={() => setView({ kind: "ai" })}
+          className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong"
+        >
+          <div className="flex items-center gap-2 text-xs text-muted">
+            <Bot size={13} /> AI Agent
+          </div>
+          <div className="mt-2 text-sm font-semibold">Ask your data</div>
+          <div className="mt-1 text-[11px] text-muted">bring your own model key</div>
+        </button>
+      </div>
+
+      {/* apps grid */}
+      <h2 className="mt-8 text-sm font-semibold text-muted">Your apps</h2>
+      {surfaces.length === 0 ? (
+        <div className="mt-3 rounded-xl border border-dashed border-border p-6 text-center">
+          <p className="text-sm text-muted">No apps yet — install a plugin to get started.</p>
+          <button
+            onClick={() => setView({ kind: "marketplace" })}
+            className="mt-3 rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
+          >
+            Browse the Marketplace
+          </button>
+        </div>
+      ) : (
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {surfaces.map((s) => (
+            <button
+              key={s.slug}
+              onClick={() =>
+                s.view === "kanban" && s.groupBy
+                  ? setView({ kind: "kanban", slug: s.slug, object: s.object!, groupBy: s.groupBy })
+                  : setView({ kind: "object", slug: s.object! })
+              }
+              className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left transition hover:border-border-strong hover:bg-card-2"
+            >
+              <span className="text-xl">{s.icon}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium">{s.label}</span>
+                <span className="block text-[11px] text-muted">
+                  {s.view === "kanban" ? "Board" : `${counts[s.object ?? ""] ?? "…"} records`}
+                </span>
+              </span>
+              {s.view === "kanban" && <LayoutGrid size={14} className="text-faint" />}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* recent events */}
+      <h2 className="mt-8 text-sm font-semibold text-muted">Latest events</h2>
+      <div className="mt-3 space-y-1.5">
+        {recentEvents.map((e) => (
+          <div
+            key={e.id}
+            className="flex items-center justify-between rounded-lg border border-border bg-card px-3 py-2 text-xs"
+          >
+            <span className="font-mono text-accent">{e.type}</span>
+            <span className="text-muted">{new Date(e.created_at).toLocaleString()}</span>
+          </div>
+        ))}
+        {recentEvents.length === 0 && (
+          <div className="rounded-lg border border-dashed border-border px-4 py-4 text-center text-xs text-muted">
+            No events yet — create a record or install a plugin.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Command palette (Ctrl+K) ---------------- */
+
+function CommandPalette({
+  open,
+  onClose,
+  surfaces,
+  setView,
+}: {
+  open: boolean;
+  onClose: () => void;
+  surfaces: { label: string; icon: string; object?: string; slug: string; view: string; groupBy?: string }[];
+  setView: (v: View) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(0);
+
+  const items = useMemo(() => {
+    const platform: { label: string; icon: React.ReactNode; view: View }[] = [
+      { label: "Home", icon: <Home size={14} />, view: { kind: "home" } },
+      { label: "Plugins", icon: <Puzzle size={14} />, view: { kind: "plugins" } },
+      { label: "Marketplace", icon: <Store size={14} />, view: { kind: "marketplace" } },
+      { label: "AI Agent", icon: <Bot size={14} />, view: { kind: "ai" } },
+      { label: "Automations", icon: <Cog size={14} />, view: { kind: "automations" } },
+      { label: "Connectors", icon: <Cable size={14} />, view: { kind: "connectors" } },
+      { label: "Events", icon: <Zap size={14} />, view: { kind: "events" } },
+      { label: "Appearance", icon: <Palette size={14} />, view: { kind: "settings" } },
+    ];
+    const apps = surfaces.map((s) => ({
+      label: s.label,
+      icon: <span className="text-sm leading-none">{s.icon}</span>,
+      view:
+        s.view === "kanban" && s.groupBy
+          ? ({ kind: "kanban", slug: s.slug, object: s.object!, groupBy: s.groupBy } as View)
+          : ({ kind: "object", slug: s.object! } as View),
+    }));
+    const all = [...apps, ...platform];
+    if (!q.trim()) return all;
+    const needle = q.toLowerCase();
+    return all.filter((i) => i.label.toLowerCase().includes(needle));
+  }, [q, surfaces]);
+
+  useEffect(() => {
+    if (open) {
+      setQ("");
+      setSel(0);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    setSel(0);
+  }, [q]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="palette-backdrop fixed inset-0 z-50 flex items-start justify-center bg-black/60 pt-[15vh] backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="palette-panel w-full max-w-lg overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 border-b border-border px-4">
+          <Search size={15} className="text-muted" />
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setSel((s) => Math.min(s + 1, items.length - 1));
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setSel((s) => Math.max(s - 1, 0));
+              } else if (e.key === "Enter" && items[sel]) {
+                setView(items[sel].view);
+              }
+            }}
+            placeholder="Search apps and views…"
+            className="w-full bg-transparent py-3 text-sm outline-none placeholder:text-faint"
+          />
+          <kbd className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted">esc</kbd>
+        </div>
+        <div className="max-h-72 overflow-y-auto p-1.5">
+          {items.map((item, i) => (
+            <button
+              key={item.label}
+              onClick={() => setView(item.view)}
+              onMouseEnter={() => setSel(i)}
+              className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition ${
+                i === sel ? "bg-accent-soft text-accent" : "hover:bg-card-2"
+              }`}
+            >
+              {item.icon}
+              <span className="flex-1">{item.label}</span>
+              {i === sel && <span className="text-[10px] text-muted">↵</span>}
+            </button>
+          ))}
+          {items.length === 0 && (
+            <div className="px-3 py-6 text-center text-sm text-muted">No matches for “{q}”</div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -260,7 +612,11 @@ function PluginsView({ plugins, onChanged }: { plugins: PluginInfo[]; onChanged:
     setBusy(pluginId + action);
     try {
       await api(`/api/plugins/${action}`, { method: "POST", body: { plugin_id: pluginId } });
+      toast(`Plugin ${action === "install" ? "installed" : action + "d"}: ${pluginId}`, "success");
       await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : `${action} failed`, "error");
     } finally {
       setBusy("");
     }
@@ -383,10 +739,12 @@ function MarketplaceView({ onChanged }: { onChanged: () => Promise<void> }) {
     setMessage("");
     try {
       await api(`/api/marketplace/plugins/${id}/install`, { method: "POST" });
+      toast(`Installed ${id}`, "success");
       setMessage(`Installed ${id} — its objects and views are live now.`);
       await load();
       await onChanged();
     } catch (e) {
+      toast("Install failed", "error");
       setMessage(`Install failed: ${String((e as { detail?: unknown }).detail ?? e)}`);
     } finally {
       setBusy("");
@@ -401,10 +759,12 @@ function MarketplaceView({ onChanged }: { onChanged: () => Promise<void> }) {
         `/api/marketplace/templates/${id}/apply`,
         { method: "POST", body: { seed: true } }
       );
+      toast(`Template "${id}" applied`, "success");
       setMessage(`Template applied: ${res.plugins_installed.length} plugin(s), ${res.records_seeded} sample records.`);
       await load();
       await onChanged();
     } catch (e) {
+      toast("Apply failed", "error");
       setMessage(`Apply failed: ${String((e as { detail?: unknown }).detail ?? e)}`);
     } finally {
       setBusy("");
@@ -531,27 +891,56 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
   const [rows, setRows] = useState<RecordRow[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(0);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<RecordRow | null>(null);
   const [form, setForm] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const PAGE_SIZE = 25;
+
+  // debounce search input
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedSearch(search);
+      setPage(0);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [search]);
 
   const load = useCallback(async () => {
     if (!object) return;
-    const qs = search ? `?search=${encodeURIComponent(search)}` : "";
-    const res = await api<{ items: RecordRow[]; total: number }>(`/api/records/${object.slug}${qs}`);
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (debouncedSearch) params.set("search", debouncedSearch);
+    params.set("limit", String(PAGE_SIZE));
+    params.set("offset", String(page * PAGE_SIZE));
+    const res = await api<{ items: RecordRow[]; total: number }>(`/api/records/${object.slug}?${params}`);
     setRows(res.items);
     setTotal(res.total);
-  }, [object, search]);
+    setLoading(false);
+  }, [object, debouncedSearch, page]);
 
   useEffect(() => {
     setForm({});
     setError("");
-    load().catch(() => {});
+    load().catch(() => setLoading(false));
   }, [load]);
 
+  // reset page when switching objects
+  useEffect(() => {
+    setPage(0);
+    setSearch("");
+    setShowForm(false);
+    setEditing(null);
+  }, [object?.slug]);
+
   if (!object) return <div className="text-muted">Object not found.</div>;
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -563,12 +952,16 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
       for (const f of object.fields) {
         const v = form[f.slug];
         if (v === undefined || v === "") continue;
-        data[f.slug] = f.type === "number" || f.type === "currency" ? Number(v) : v;
+        if (f.type === "number" || f.type === "currency") data[f.slug] = Number(v);
+        else if (f.type === "multiselect") data[f.slug] = v.split(",").map((s) => s.trim()).filter(Boolean);
+        else data[f.slug] = v;
       }
       if (editing) {
         await api(`/api/records/${object.slug}/${editing.id}`, { method: "PATCH", body: { data } });
+        toast(`${object.name} updated`, "success");
       } else {
         await api(`/api/records/${object.slug}`, { method: "POST", body: { data } });
+        toast(`${object.name} created`, "success");
       }
       setShowForm(false);
       setEditing(null);
@@ -588,7 +981,9 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
     if (object) {
       for (const field of object.fields) {
         const v = r.data[field.slug];
-        if (v !== null && v !== undefined) f[field.slug] = String(v);
+        if (v !== null && v !== undefined) {
+          f[field.slug] = Array.isArray(v) ? v.join(", ") : String(v);
+        }
       }
     }
     setForm(f);
@@ -599,17 +994,24 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
 
   async function remove(id: string) {
     if (!object) return;
-    await api(`/api/records/${object.slug}/${id}`, { method: "DELETE" });
-    await load();
-    await onChanged();
+    try {
+      await api(`/api/records/${object.slug}/${id}`, { method: "DELETE" });
+      toast(`${object.name} deleted`, "success");
+      setConfirmDelete(null);
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    }
   }
 
   const input =
-    "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent";
+    "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition focus:border-accent";
 
   return (
     <div>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold">
             {object.icon} {object.name_plural}
@@ -619,12 +1021,15 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
           </p>
         </div>
         <div className="flex gap-2">
-          <input
-            className={input + " w-48"}
-            placeholder="Search…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div className="relative">
+            <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
+            <input
+              className={input + " w-52 pl-8"}
+              placeholder={`Search ${object.name_plural.toLowerCase()}…`}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
           <button
             onClick={() => {
               if (showForm) {
@@ -645,7 +1050,8 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
       {showForm && (
         <form onSubmit={create} className="mt-4 grid gap-3 rounded-xl border border-border bg-card p-4 md:grid-cols-2">
           {editing && (
-            <div className="text-xs text-muted md:col-span-2">
+            <div className="flex items-center gap-1.5 text-xs text-muted md:col-span-2">
+              <Pencil size={11} />
               Editing record <span className="font-mono">{editing.id.slice(0, 8)}…</span>
             </div>
           )}
@@ -653,6 +1059,7 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
             <label key={f.slug} className="block text-xs">
               <span className="mb-1 block text-muted">
                 {f.name} {f.required && <span className="text-danger">*</span>}
+                {f.type === "multiselect" && <span className="ml-1 text-faint">(comma-separated)</span>}
               </span>
               {f.type === "select" ? (
                 <select
@@ -686,9 +1093,20 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
             </label>
           ))}
           {error && <div className="text-xs text-danger md:col-span-2">{error}</div>}
-          <div className="md:col-span-2">
+          <div className="flex gap-2 md:col-span-2">
             <button disabled={busy} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
               {busy ? "…" : editing ? "Save changes" : "Create"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowForm(false);
+                setEditing(null);
+                setForm({});
+              }}
+              className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:border-border-strong hover:text-foreground"
+            >
+              Cancel
             </button>
           </div>
         </form>
@@ -705,33 +1123,99 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} className="border-b border-border/50 last:border-0 hover:bg-card/50">
-                {object.fields.map((f) => (
-                  <td key={f.slug} className="max-w-[220px] truncate px-3 py-2">
-                    {renderCell(r.data[f.slug], f.type)}
+            {loading &&
+              Array.from({ length: 4 }).map((_, i) => (
+                <tr key={`sk-${i}`} className="border-b border-border/50">
+                  {object.fields.map((f) => (
+                    <td key={f.slug} className="px-3 py-2.5">
+                      <div className="skeleton h-4 w-3/4" />
+                    </td>
+                  ))}
+                  <td className="px-3 py-2.5"><div className="skeleton ml-auto h-4 w-12" /></td>
+                </tr>
+              ))}
+            {!loading &&
+              rows.map((r) => (
+                <tr key={r.id} className="group border-b border-border/50 last:border-0 hover:bg-card/50">
+                  {object.fields.map((f) => (
+                    <td key={f.slug} className="max-w-[220px] truncate px-3 py-2">
+                      {renderCell(r.data[f.slug], f.type)}
+                    </td>
+                  ))}
+                  <td className="px-3 py-2 text-right">
+                    <div className="flex items-center justify-end gap-1 opacity-0 transition group-hover:opacity-100">
+                      <button
+                        onClick={() => startEdit(r)}
+                        title="Edit"
+                        className="rounded-md p-1.5 text-muted transition hover:bg-accent-soft hover:text-accent"
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      {confirmDelete === r.id ? (
+                        <span className="flex items-center gap-1">
+                          <button
+                            onClick={() => remove(r.id)}
+                            className="rounded-md bg-danger/15 px-2 py-1 text-[11px] font-semibold text-danger hover:bg-danger/25"
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            onClick={() => setConfirmDelete(null)}
+                            className="rounded-md px-1.5 py-1 text-[11px] text-muted hover:text-foreground"
+                          >
+                            Cancel
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmDelete(r.id)}
+                          title="Delete"
+                          className="rounded-md p-1.5 text-muted transition hover:bg-danger/15 hover:text-danger"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
                   </td>
-                ))}
-                <td className="px-3 py-2 text-right">
-                  <button onClick={() => startEdit(r)} className="mr-3 text-xs text-muted hover:text-accent">
-                    edit
-                  </button>
-                  <button onClick={() => remove(r.id)} className="text-xs text-muted hover:text-danger">
-                    delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
+                </tr>
+              ))}
+            {!loading && rows.length === 0 && (
               <tr>
-                <td colSpan={object.fields.length + 1} className="px-3 py-8 text-center text-muted">
-                  No {object.name_plural.toLowerCase()} yet.
+                <td colSpan={object.fields.length + 1} className="px-3 py-10 text-center text-muted">
+                  {debouncedSearch
+                    ? `No ${object.name_plural.toLowerCase()} match “${debouncedSearch}”.`
+                    : `No ${object.name_plural.toLowerCase()} yet — create the first one.`}
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {/* pagination */}
+      {total > PAGE_SIZE && (
+        <div className="mt-3 flex items-center justify-between text-xs text-muted">
+          <span>
+            Page {page + 1} of {totalPages} · showing {rows.length} of {total}
+          </span>
+          <div className="flex gap-1">
+            <button
+              disabled={page === 0}
+              onClick={() => setPage((p) => p - 1)}
+              className="flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 transition hover:border-border-strong hover:text-foreground disabled:opacity-40"
+            >
+              <ChevronLeft size={12} /> Prev
+            </button>
+            <button
+              disabled={page >= totalPages - 1}
+              onClick={() => setPage((p) => p + 1)}
+              className="flex items-center gap-1 rounded-lg border border-border px-2.5 py-1 transition hover:border-border-strong hover:text-foreground disabled:opacity-40"
+            >
+              Next <ChevronRight size={12} />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -741,6 +1225,16 @@ function renderCell(v: unknown, type: string) {
   if (type === "currency") return <span className="font-mono">${Number(v).toLocaleString()}</span>;
   if (type === "select")
     return <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-xs text-accent">{String(v)}</span>;
+  if (type === "multiselect" && Array.isArray(v))
+    return (
+      <span className="flex flex-wrap gap-1">
+        {v.map((x) => (
+          <span key={String(x)} className="rounded-md bg-card-2 px-1.5 py-0.5 text-xs text-muted">
+            {String(x)}
+          </span>
+        ))}
+      </span>
+    );
   return String(v);
 }
 
@@ -759,13 +1253,15 @@ function KanbanView({
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [quickAddCol, setQuickAddCol] = useState<string | null>(null);
+  const [quickAddTitle, setQuickAddTitle] = useState("");
 
   const groupField = object?.fields.find((f) => f.slug === groupBy);
   const columns = groupField?.options.choices ?? [];
 
   const load = useCallback(async () => {
     if (!object) return;
-    const res = await api<{ items: RecordRow[]; total: number }>(`/api/records/${object.slug}`);
+    const res = await api<{ items: RecordRow[]; total: number }>(`/api/records/${object.slug}?limit=200`);
     setRows(res.items);
   }, [object]);
 
@@ -780,6 +1276,9 @@ function KanbanView({
   const titleField =
     object.fields.find((f) => f.type === "text" && f.slug !== groupBy) ?? object.fields[0];
   const subField = object.fields.find((f) => f.type === "currency") ?? null;
+  // extra chip fields: select fields other than the group field (max 1)
+  const chipField = object.fields.find((f) => f.type === "select" && f.slug !== groupBy) ?? null;
+  const dateField = object.fields.find((f) => f.type === "date") ?? null;
 
   async function moveTo(recordId: string, value: string) {
     if (!object) return;
@@ -789,8 +1288,34 @@ function KanbanView({
         method: "PATCH",
         body: { data: { [groupBy]: value } },
       });
+      toast(`Moved to ${value}`, "success");
       await load();
       await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Move failed", "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function quickAdd(e: React.FormEvent, col: string) {
+    e.preventDefault();
+    if (!object || !quickAddTitle.trim()) return;
+    setBusy(true);
+    try {
+      await api(`/api/records/${object.slug}`, {
+        method: "POST",
+        body: { data: { [titleField.slug]: quickAddTitle.trim(), [groupBy]: col } },
+      });
+      toast(`${object.name} added to ${col}`, "success");
+      setQuickAddTitle("");
+      setQuickAddCol(null);
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
     } finally {
       setBusy(false);
     }
@@ -813,6 +1338,9 @@ function KanbanView({
       <div className="mt-4 flex gap-3 overflow-x-auto pb-4">
         {columns.map((col) => {
           const cards = rows.filter((r) => String(r.data[groupBy] ?? "") === col);
+          const colTotal = subField
+            ? cards.reduce((sum, r) => sum + (Number(r.data[subField.slug]) || 0), 0)
+            : null;
           return (
             <div
               key={col}
@@ -833,8 +1361,13 @@ function KanbanView({
             >
               <div className="flex items-center justify-between border-b border-border px-3 py-2">
                 <span className="text-sm font-semibold">{col}</span>
-                <span className="rounded-md bg-background px-1.5 py-0.5 text-xs text-muted">
-                  {cards.length}
+                <span className="flex items-center gap-1.5">
+                  {colTotal !== null && colTotal > 0 && (
+                    <span className="font-mono text-[11px] text-muted">${colTotal.toLocaleString()}</span>
+                  )}
+                  <span className="rounded-md bg-background px-1.5 py-0.5 text-xs text-muted">
+                    {cards.length}
+                  </span>
                 </span>
               </div>
               <div className="flex min-h-[80px] flex-1 flex-col gap-2 p-2">
@@ -844,24 +1377,79 @@ function KanbanView({
                     draggable
                     onDragStart={() => setDragId(r.id)}
                     onDragEnd={() => setDragId(null)}
-                    className={`cursor-grab rounded-lg border border-border bg-card p-3 shadow-sm transition hover:border-border-strong active:cursor-grabbing ${
-                      dragId === r.id ? "opacity-50" : ""
+                    className={`kanban-card cursor-grab rounded-lg border border-border bg-card p-3 active:cursor-grabbing ${
+                      dragId === r.id ? "dragging" : ""
                     }`}
                   >
                     <div className="text-sm font-medium">
                       {String(r.data[titleField.slug] ?? "—")}
                     </div>
-                    {subField && r.data[subField.slug] != null && (
-                      <div className="mt-1 font-mono text-xs text-muted">
-                        ${Number(r.data[subField.slug]).toLocaleString()}
-                      </div>
-                    )}
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      {subField && r.data[subField.slug] != null && (
+                        <span className="font-mono text-xs text-muted">
+                          ${Number(r.data[subField.slug]).toLocaleString()}
+                        </span>
+                      )}
+                      {chipField && r.data[chipField.slug] != null && (
+                        <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-[10px] text-accent">
+                          {String(r.data[chipField.slug])}
+                        </span>
+                      )}
+                      {dateField && r.data[dateField.slug] != null && (
+                        <span className="text-[10px] text-faint">{String(r.data[dateField.slug])}</span>
+                      )}
+                    </div>
                   </div>
                 ))}
-                {cards.length === 0 && (
+                {cards.length === 0 && quickAddCol !== col && (
                   <div className="rounded-lg border border-dashed border-border px-2 py-4 text-center text-xs text-muted">
                     Drop here
                   </div>
+                )}
+                {quickAddCol === col ? (
+                  <form onSubmit={(e) => quickAdd(e, col)} className="space-y-1.5">
+                    <input
+                      autoFocus
+                      value={quickAddTitle}
+                      onChange={(e) => setQuickAddTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          setQuickAddCol(null);
+                          setQuickAddTitle("");
+                        }
+                      }}
+                      placeholder={`${object.name} title…`}
+                      className="w-full rounded-lg border border-accent bg-background px-2.5 py-1.5 text-xs outline-none"
+                    />
+                    <div className="flex gap-1">
+                      <button
+                        disabled={busy || !quickAddTitle.trim()}
+                        className="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-on-accent disabled:opacity-50"
+                      >
+                        Add
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setQuickAddCol(null);
+                          setQuickAddTitle("");
+                        }}
+                        className="rounded-md px-2 py-1 text-[11px] text-muted hover:text-foreground"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setQuickAddCol(col);
+                      setQuickAddTitle("");
+                    }}
+                    className="rounded-lg px-2 py-1.5 text-left text-xs text-faint transition hover:bg-card hover:text-muted"
+                  >
+                    + Add {object.name.toLowerCase()}
+                  </button>
                 )}
               </div>
             </div>
@@ -886,6 +1474,12 @@ function AiView({ onChanged }: { onChanged: () => Promise<void> }) {
   const [input, setInput] = useState("");
   const [chatBusy, setChatBusy] = useState(false);
   const [chatError, setChatError] = useState("");
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // auto-scroll to newest message
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, chatBusy]);
 
   const loadKeys = useCallback(async () => {
     setKeys(await api<AiKeyInfo[]>("/api/ai/keys"));
@@ -1046,11 +1640,30 @@ function AiView({ onChanged }: { onChanged: () => Promise<void> }) {
                 </div>
               </div>
             ))}
-            {chatBusy && <div className="text-xs text-muted">Agent thinking…</div>}
+            {chatBusy && (
+              <div className="flex items-center gap-2 text-xs text-muted">
+                <span className="inline-block h-3 w-3 animate-spin rounded-full border border-accent border-t-transparent" />
+                Agent thinking…
+              </div>
+            )}
             {chatError && <div className="text-xs text-danger">{chatError}</div>}
             {messages.length === 0 && !chatBusy && (
-              <div className="pt-8 text-center text-sm text-muted">Ask the agent to work with your data.</div>
+              <div className="pt-8 text-center">
+                <p className="text-sm text-muted">Ask the agent to work with your data.</p>
+                <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+                  {["Create a lead named Sam from Referral", "How many deals are in Negotiation?", "List open tickets"].map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setInput(s)}
+                      className="rounded-full border border-border px-2.5 py-1 text-xs text-muted transition hover:border-border-strong hover:text-foreground"
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
+            <div ref={chatEndRef} />
           </div>
 
           <form onSubmit={send} className="flex gap-2 border-t border-border p-3">
@@ -1142,6 +1755,7 @@ function ConnectorsView() {
         method: "POST",
         body: { name: form.name, type: form.type, config: form.config, description: form.description },
       });
+      toast(`Connector "${form.name}" added`, "success");
       setShowAdd(false);
       setForm({ name: "", type: "webhook", config: {}, description: "" });
       await load();
@@ -1169,6 +1783,7 @@ function ConnectorsView() {
 
   async function removeConnector(id: string) {
     await api(`/api/connectors/${id}`, { method: "DELETE" });
+    toast("Connector removed", "success");
     await load();
   }
 
@@ -1276,7 +1891,11 @@ function ConnectorsView() {
               </div>
             </div>
             <div className="mt-1 truncate text-xs text-muted">
-              {Object.entries(c.config).map(([k, v]) => `${k}=${v}`).join(" · ") || c.description}
+              {Object.entries(c.config)
+                .map(([k, v]) =>
+                  /password|secret|key|token/i.test(k) ? `${k}=••••••` : `${k}=${v}`
+                )
+                .join(" · ") || c.description}
             </div>
             {testResult[c.id] && (
               <div className={`mt-1 text-xs ${testResult[c.id].startsWith("✓") ? "text-success" : "text-danger"}`}>
@@ -1290,7 +1909,7 @@ function ConnectorsView() {
                   <input className={inputCls} value={querySql} onChange={(e) => setQuerySql(e.target.value)}
                     placeholder="SELECT * FROM table LIMIT 10" />
                   <button onClick={() => runQuery(c.id)}
-                    className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90">
+                    className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent hover:brightness-110">
                     Run
                   </button>
                 </div>
@@ -1453,32 +2072,92 @@ function EventsView() {
   const [events, setEvents] = useState<
     { id: string; type: string; plugin_id: string; payload: unknown; created_at: string }[]
   >([]);
+  const [filter, setFilter] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     api<typeof events>("/api/events?limit=50").then(setEvents).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const types = useMemo(() => {
+    const s = new Set(events.map((e) => e.type));
+    return [...s].sort();
+  }, [events]);
+
+  const shown = filter ? events.filter((e) => e.type === filter) : events;
+
   return (
     <div>
-      <h1 className="text-xl font-bold">⚡ Events</h1>
-      <p className="mt-1 text-sm text-muted">
-        The event seam — every action in the kernel lands here. Automation, analytics forwarding,
-        and AI context all plug into this stream.
-      </p>
-      <div className="mt-6 space-y-2">
-        {events.map((e) => (
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">⚡ Events</h1>
+          <p className="mt-1 text-sm text-muted">
+            The event seam — every action in the kernel lands here. Automation, analytics forwarding,
+            and AI context all plug into this stream.
+          </p>
+        </div>
+        <button
+          onClick={load}
+          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted transition hover:border-border-strong hover:text-foreground"
+        >
+          <RotateCcw size={12} /> Refresh
+        </button>
+      </div>
+
+      {types.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          <button
+            onClick={() => setFilter("")}
+            className={`rounded-full px-2.5 py-1 text-xs transition ${
+              filter === "" ? "bg-accent text-on-accent" : "bg-card text-muted hover:text-foreground"
+            }`}
+          >
+            All ({events.length})
+          </button>
+          {types.map((t) => (
+            <button
+              key={t}
+              onClick={() => setFilter(filter === t ? "" : t)}
+              className={`rounded-full px-2.5 py-1 font-mono text-xs transition ${
+                filter === t ? "bg-accent text-on-accent" : "bg-card text-muted hover:text-foreground"
+              }`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-4 space-y-2">
+        {shown.map((e) => (
           <div key={e.id} className="rounded-lg border border-border bg-card px-4 py-2.5 text-sm">
-            <div className="flex items-center justify-between gap-3">
+            <button
+              onClick={() => setExpanded(expanded === e.id ? null : e.id)}
+              className="flex w-full items-center justify-between gap-3 text-left"
+            >
               <span className="font-mono text-xs text-accent">{e.type}</span>
               <span className="text-[11px] text-muted">
                 {e.plugin_id && <span className="mr-2">🧩 {e.plugin_id}</span>}
                 {new Date(e.created_at).toLocaleTimeString()}
+                <span className="ml-2 text-faint">{expanded === e.id ? "▾" : "▸"}</span>
               </span>
-            </div>
-            <pre className="mt-1 overflow-x-auto text-[11px] text-muted">{JSON.stringify(e.payload)}</pre>
+            </button>
+            {expanded === e.id && (
+              <pre className="mt-2 overflow-x-auto rounded-lg bg-background p-3 text-[11px] leading-relaxed text-muted">
+                {JSON.stringify(e.payload, null, 2)}
+              </pre>
+            )}
           </div>
         ))}
-        {events.length === 0 && <div className="text-sm text-muted">No events yet.</div>}
+        {shown.length === 0 && (
+          <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+            {filter ? `No events of type ${filter}.` : "No events yet."}
+          </div>
+        )}
       </div>
     </div>
   );
