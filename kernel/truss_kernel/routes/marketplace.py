@@ -18,6 +18,7 @@ from truss_kernel.db import get_db
 from truss_kernel.deps import AuthContext, require_admin, require_member, require_viewer
 from truss_kernel.events import bus
 from truss_kernel.marketplace import catalog as mp
+from truss_kernel.plugins import sdk as plugin_sdk
 from truss_kernel.plugins.registry import registry
 from truss_kernel.services import records as svc
 
@@ -27,6 +28,87 @@ router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
 
 class TemplateApplyIn(BaseModel):
     seed: bool = True
+
+
+class PublishIn(BaseModel):
+    manifest: dict
+    install: bool = True  # also install into the publishing tenant
+
+
+# ---------------- publish (developer platform) ----------------
+
+@router.post("/publish", status_code=201)
+async def publish_plugin(
+    body: PublishIn,
+    auth: AuthContext = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Publish a plugin manifest to the marketplace.
+
+    Validates strictly via the Plugin SDK, materializes plugin.json into the
+    external plugins dir, re-discovers, and (optionally) installs it into the
+    publishing tenant. Rejects id collisions with builtins.
+    """
+    try:
+        manifest = plugin_sdk.validate_manifest(body.manifest)
+    except plugin_sdk.ManifestError as e:
+        raise HTTPException(422, {"errors": e.errors}) from e
+
+    # never let a publish shadow a builtin plugin id
+    if registry.get(manifest.id) is not None:
+        existing = registry.get(manifest.id)
+        raise HTTPException(409, f"plugin id '{manifest.id}' already exists (v{existing.version})")
+
+    ext_root = Path(settings.external_plugins_dir)
+    plugin_dir = ext_root / manifest.id
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps(body.manifest, indent=2), encoding="utf-8"
+    )
+    registry.discover()
+
+    installed = False
+    version = manifest.version
+    if body.install:
+        inst = await registry.install(db, auth.tenant_id, manifest.id)
+        installed = True
+        version = inst.version
+
+    await bus.emit(
+        db, tenant_id=auth.tenant_id, event_type="plugin.published",
+        payload={"plugin_id": manifest.id, "version": manifest.version},
+        actor_id=auth.user_id, plugin_id=manifest.id,
+    )
+    await db.commit()
+    return {
+        "ok": True,
+        "plugin_id": manifest.id,
+        "version": version,
+        "installed": installed,
+        "objects": len(manifest.objects),
+        "tools": len(manifest.tools),
+    }
+
+
+@router.post("/validate")
+async def validate_manifest_route(
+    body: dict,
+    auth: AuthContext = Depends(require_viewer),
+):
+    """Dry-run manifest validation (no install). Returns errors or a summary."""
+    try:
+        m = plugin_sdk.validate_manifest(body)
+        return {
+            "ok": True,
+            "plugin_id": m.id,
+            "version": m.version,
+            "objects": len(m.objects),
+            "tools": len(m.tools),
+            "automations": len(m.automations),
+            "ui": len(m.ui),
+        }
+    except plugin_sdk.ManifestError as e:
+        return {"ok": False, "errors": e.errors}
 
 
 # ---------------- community plugins ----------------

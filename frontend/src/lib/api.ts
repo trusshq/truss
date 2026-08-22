@@ -34,7 +34,7 @@ export class ApiError extends Error {
 
 export async function api<T = unknown>(
   path: string,
-  opts: { method?: string; body?: unknown; auth?: boolean } = {}
+  opts: { method?: string; body?: unknown; auth?: boolean; raw?: boolean } = {}
 ): Promise<T> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const token = getToken();
@@ -47,6 +47,13 @@ export async function api<T = unknown>(
   });
 
   if (res.status === 204) return undefined as T;
+
+  // raw mode: return the body as text (for markdown/plain-text endpoints)
+  if (opts.raw) {
+    const text = await res.text();
+    if (!res.ok) throw new ApiError(res.status, text);
+    return text as unknown as T;
+  }
 
   let data: unknown = null;
   try {

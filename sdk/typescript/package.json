@@ -1,0 +1,18 @@
+{
+  "name": "@truss/client",
+  "version": "0.1.0",
+  "description": "Typed TypeScript client for the Truss kernel API",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": ["truss", "api", "client", "sdk"],
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

@@ -13,6 +13,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Code2,
   Cog,
   Coins,
   Command,
@@ -101,6 +102,7 @@ type View =
   | { kind: "review" }
   | { kind: "autopilot" }
   | { kind: "insights" }
+  | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
   | { kind: "settings" }
@@ -358,6 +360,7 @@ function SidebarContent({
           <NavItem active={view.kind === "review"} onClick={() => go({ kind: "review" })} icon={<Inbox size={15} />} label="Review Inbox" />
           <NavItem active={view.kind === "autopilot"} onClick={() => go({ kind: "autopilot" })} icon={<Zap size={15} />} label="Autopilot" />
           <NavItem active={view.kind === "insights"} onClick={() => go({ kind: "insights" })} icon={<BarChart3 size={15} />} label="Insights" />
+          <NavItem active={view.kind === "developer"} onClick={() => go({ kind: "developer" })} icon={<Code2 size={15} />} label="Developer" />
           <NavItem active={view.kind === "automations"} onClick={() => go({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
           {me.role !== "viewer" && (
             <NavItem active={view.kind === "connectors"} onClick={() => go({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
@@ -635,6 +638,7 @@ export default function DashboardPage() {
             {view.kind === "review" && <ReviewView onChanged={refresh} />}
             {view.kind === "autopilot" && <AutopilotView onChanged={refresh} />}
             {view.kind === "insights" && <InsightsView />}
+            {view.kind === "developer" && <DeveloperView />}
             {view.kind === "automations" && <AutomationsView />}
             {view.kind === "connectors" && <ConnectorsView />}
             {view.kind === "settings" && <SettingsView />}
@@ -4160,6 +4164,110 @@ function AutopilotView({ onChanged }: { onChanged: () => Promise<void> }) {
           )))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------------- Phase E: Developer portal ---------------- */
+
+function DeveloperView() {
+  const [reference, setReference] = useState("");
+  const [manifestText, setManifestText] = useState("");
+  const [validation, setValidation] = useState<{ ok: boolean; errors?: string[]; plugin_id?: string; version?: string; objects?: number; tools?: number } | null>(null);
+  const [validating, setValidating] = useState(false);
+
+  useEffect(() => {
+    api<string>("/api/dev/reference", { raw: true }).then(setReference).catch(() => setReference(""));
+  }, []);
+
+  async function validateManifest() {
+    setValidating(true);
+    setValidation(null);
+    try {
+      const parsed = JSON.parse(manifestText);
+      const res = await api<{ ok: boolean; errors?: string[]; plugin_id?: string; version?: string; objects?: number; tools?: number }>(
+        "/api/marketplace/validate",
+        { method: "POST", body: parsed }
+      );
+      setValidation(res);
+    } catch (err) {
+      setValidation({ ok: false, errors: [err instanceof SyntaxError ? "Invalid JSON: " + err.message : "Request failed"] });
+    } finally {
+      setValidating(false);
+    }
+  }
+
+  const quickstart = `import { TrussClient } from "@truss/client";
+
+const truss = new TrussClient({ baseUrl: "http://localhost:8000" });
+await truss.auth.login({ email, password });
+
+const leads = await truss.records.list("lead");
+await truss.records.create("lead", { name: "Acme", email: "a@b.co" });
+const stats = await truss.insights.query({ object: "deal", metric: "sum", field: "amount" });`;
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div>
+        <h1 className="text-xl font-bold">Developer</h1>
+        <p className="mt-0.5 text-xs text-muted">Build on Truss: typed SDK, plugin manifest validation, and the full API reference.</p>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        {/* TS client quickstart */}
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">TypeScript client</h2>
+          <p className="mt-1 text-xs text-muted">Typed, dependency-free client for the kernel API. Lives in <code className="rounded bg-background px-1">sdk/typescript</code>.</p>
+          <pre className="mt-3 overflow-x-auto rounded-lg bg-background p-3 text-[11px] leading-relaxed text-foreground">{quickstart}</pre>
+          <div className="mt-3 flex gap-2">
+            <a href={`${API_BASE}/docs`} target="_blank" rel="noreferrer" className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition hover:text-foreground">Interactive docs (/docs)</a>
+            <a href={`${API_BASE}/api/dev/openapi.json`} target="_blank" rel="noreferrer" className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition hover:text-foreground">OpenAPI spec</a>
+          </div>
+        </div>
+
+        {/* manifest validator */}
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Plugin manifest validator</h2>
+          <p className="mt-1 text-xs text-muted">Paste a plugin.json and dry-run it against the Plugin SDK (no install).</p>
+          <textarea
+            className="mt-3 h-40 w-full rounded-lg border border-border bg-background p-3 font-mono text-[11px] outline-none transition focus:border-accent"
+            placeholder='{"id": "my-plugin", "name": "My Plugin", "version": "0.1.0", ...}'
+            value={manifestText}
+            onChange={(e) => setManifestText(e.target.value)}
+          />
+          <button
+            disabled={validating || !manifestText.trim()}
+            onClick={validateManifest}
+            className="mt-2 rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50"
+          >
+            {validating ? "Validating…" : "Validate"}
+          </button>
+          {validation && (
+            <div className="mt-3">
+              {validation.ok ? (
+                <div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+                  ✓ Valid — {validation.plugin_id} v{validation.version} ({validation.objects} object(s), {validation.tools} tool(s))
+                </div>
+              ) : (
+                <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+                  <div className="font-semibold">Invalid manifest:</div>
+                  <ul className="mt-1 list-inside list-disc space-y-0.5">
+                    {(validation.errors ?? []).map((e, i) => <li key={i}>{e}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* API reference */}
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h2 className="text-sm font-semibold">API reference</h2>
+        <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-lg bg-background p-3 text-[11px] leading-relaxed text-muted">
+          {reference || "Loading…"}
+        </pre>
+      </div>
     </div>
   );
 }

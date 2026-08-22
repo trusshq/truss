@@ -38,6 +38,7 @@ SUITES = [
     "org_smoke_test.py",
     "orchestration_smoke_test.py",
     "insights_smoke_test.py",
+    "devplatform_smoke_test.py",
 ]
 
 
