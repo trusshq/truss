@@ -1,12 +1,15 @@
-"""CI runner: boots mock servers, waits for the kernel, runs every smoke suite.
+"""CI runner: boots mock servers (and optionally the kernel), runs every suite.
 
-Usage (kernel must already be running, e.g. via docker compose or uvicorn):
+Usage:
     python run_all_tests.py
 
 Environment:
-    TRUSS_TEST_BASE       kernel URL   (default http://127.0.0.1:8000)
-    TRUSS_TEST_AI_BASE    mock AI URL  (default http://127.0.0.1:9999/v1)
-    TRUSS_TEST_WEBHOOK_RX mock webhook (default http://127.0.0.1:9998)
+    TRUSS_TEST_BASE          kernel URL   (default http://127.0.0.1:8000)
+    TRUSS_TEST_AI_BASE       mock AI URL  (default http://127.0.0.1:9999/v1)
+    TRUSS_TEST_WEBHOOK_RX    mock webhook (default http://127.0.0.1:9998)
+    TRUSS_TEST_SPAWN_KERNEL  "1" = spawn the kernel ourselves (CI mode: keeps
+                             it alive in-process, immune to step/process-group
+                             teardown between shell steps)
 
 Exits non-zero if any suite fails.
 """
@@ -45,8 +48,25 @@ def wait_for_kernel(timeout: int = 90) -> bool:
 
 
 def main() -> int:
+    procs = []
+
+    # Optionally spawn the kernel in-process (CI mode). Using the venv's
+    # uvicorn directly avoids `uv run` reinstalling the non-installable
+    # local package.
+    if os.environ.get("TRUSS_TEST_SPAWN_KERNEL") == "1":
+        venv_uv = os.path.join(HERE, ".venv", "bin", "uvicorn")
+        if os.name == "nt":
+            venv_uv = os.path.join(HERE, ".venv", "Scripts", "uvicorn.exe")
+        port = BASE.rsplit(":", 1)[-1].split("/", 1)[0]
+        kernel_log = open(os.path.join(HERE, "kernel.log"), "w")
+        procs.append(subprocess.Popen(
+            [venv_uv, "truss_kernel.main:app", "--host", "127.0.0.1", "--port", port],
+            cwd=HERE, stdout=kernel_log, stderr=subprocess.STDOUT,
+        ))
+        print(f"Spawned kernel (port {port}), log: kernel.log", flush=True)
+
     # Boot mock servers (stdlib http.server, quiet logs)
-    mocks = [
+    procs += [
         subprocess.Popen([sys.executable, os.path.join(HERE, "mock_openai.py")],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
         subprocess.Popen([sys.executable, os.path.join(HERE, "mock_webhook.py")],
@@ -89,7 +109,7 @@ def main() -> int:
         print(f"\nTOTAL: {total_pass} passed, {total_fail} failed across {len(SUITES)} suites", flush=True)
         return 1 if total_fail else 0
     finally:
-        for m in mocks:
+        for m in procs:
             m.terminate()
 
 
