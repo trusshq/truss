@@ -8,6 +8,7 @@ import {
   Boxes,
   Cable,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Cog,
@@ -16,6 +17,7 @@ import {
   Database,
   Home,
   Info,
+  Kanban,
   LayoutGrid,
   LogOut,
   Monitor,
@@ -143,6 +145,50 @@ function NavItem({
   );
 }
 
+/* ---------------- Collapsible sidebar section ---------------- */
+
+function NavSection({
+  icon,
+  label,
+  count,
+  open,
+  onToggle,
+  active,
+  children,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  count?: number;
+  open: boolean;
+  onToggle: () => void;
+  active: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition ${
+          active ? "font-medium text-accent" : "hover:bg-card"
+        }`}
+      >
+        {icon}
+        <span className="flex-1 truncate">{label}</span>
+        {count !== undefined && count > 0 && (
+          <span className="rounded-md bg-background px-1.5 py-0.5 text-[10px] text-muted">{count}</span>
+        )}
+        <ChevronDown
+          size={13}
+          className={`shrink-0 text-muted transition-transform duration-150 ${open ? "" : "-rotate-90"}`}
+        />
+      </button>
+      {open && (
+        <div className="ml-[15px] mt-0.5 space-y-0.5 border-l border-border pl-2.5">{children}</div>
+      )}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const router = useRouter();
   const [me, setMe] = useState<Me | null>(null);
@@ -151,6 +197,13 @@ export default function DashboardPage() {
   const [view, setView] = useState<View>({ kind: "home" });
   const [bootError, setBootError] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    apps: true,
+    boards: true,
+    platform: true,
+    account: false,
+  });
+  const toggleSection = (id: string) => setOpenSections((s) => ({ ...s, [id]: !s[id] }));
 
   // Ctrl/Cmd+K command palette
   useEffect(() => {
@@ -207,6 +260,21 @@ export default function DashboardPage() {
     return out;
   }, [plugins]);
 
+  const tableSurfaces = useMemo(() => surfaces.filter((s) => s.view === "table"), [surfaces]);
+  const boardSurfaces = useMemo(() => surfaces.filter((s) => s.view === "kanban"), [surfaces]);
+
+  // Auto-open the section that contains the active view (e.g. after a palette jump)
+  useEffect(() => {
+    setOpenSections((s) => {
+      const next = { ...s };
+      if (view.kind === "object") next.apps = true;
+      if (view.kind === "kanban") next.boards = true;
+      if (["plugins", "marketplace", "ai", "automations", "connectors", "events"].includes(view.kind)) next.platform = true;
+      if (["workspace", "profile", "settings"].includes(view.kind)) next.account = true;
+      return next;
+    });
+  }, [view]);
+
   if (bootError) {
     return (
       <main className="flex min-h-screen items-center justify-center">
@@ -259,44 +327,88 @@ export default function DashboardPage() {
             label="Home"
           />
 
-          <div className="px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted">Apps</div>
-          {surfaces.length === 0 && (
-            <div className="px-2 py-1 text-xs text-muted">Install a plugin to see its apps →</div>
-          )}
-          {surfaces.map((s) => (
-            <NavItem
-              key={s.slug}
-              active={
-                (view.kind === "object" && view.slug === s.object && s.view === "table") ||
-                (view.kind === "kanban" && view.slug === s.slug)
-              }
-              onClick={() =>
-                s.view === "kanban" && s.groupBy
-                  ? setView({ kind: "kanban", slug: s.slug, object: s.object!, groupBy: s.groupBy })
-                  : setView({ kind: "object", slug: s.object! })
-              }
-              icon={<span className="text-[13px] leading-none">{s.icon}</span>}
-              label={s.label}
-              badge={s.view === "kanban" ? "board" : undefined}
-            />
-          ))}
+          {/* Apps — every table view, grouped in one dropdown */}
+          <NavSection
+            icon={<LayoutGrid size={15} />}
+            label="Apps"
+            count={tableSurfaces.length}
+            open={openSections.apps}
+            onToggle={() => toggleSection("apps")}
+            active={view.kind === "object"}
+          >
+            {tableSurfaces.length === 0 && (
+              <div className="px-2 py-1 text-xs text-muted">Install a plugin to see its apps →</div>
+            )}
+            {tableSurfaces.map((s) => (
+              <NavItem
+                key={s.slug}
+                active={view.kind === "object" && view.slug === s.object}
+                onClick={() => setView({ kind: "object", slug: s.object! })}
+                icon={<span className="text-[13px] leading-none">{s.icon}</span>}
+                label={s.label}
+              />
+            ))}
+          </NavSection>
 
-          <div className="px-2 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-muted">Platform</div>
-          <NavItem active={view.kind === "plugins"} onClick={() => setView({ kind: "plugins" })} icon={<Puzzle size={15} />} label="Plugins" />
-          <NavItem active={view.kind === "marketplace"} onClick={() => setView({ kind: "marketplace" })} icon={<Store size={15} />} label="Marketplace" />
-          {me.role !== "viewer" && (
-            <NavItem active={view.kind === "ai"} onClick={() => setView({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
-          )}
-          <NavItem active={view.kind === "automations"} onClick={() => setView({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
-          {me.role !== "viewer" && (
-            <NavItem active={view.kind === "connectors"} onClick={() => setView({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
-          )}
-          <NavItem active={view.kind === "events"} onClick={() => setView({ kind: "events" })} icon={<Zap size={15} />} label="Events" />
-          <NavItem active={view.kind === "settings"} onClick={() => setView({ kind: "settings" })} icon={<Palette size={15} />} label="Appearance" />
+          {/* Boards — every kanban board, grouped in one dropdown */}
+          <NavSection
+            icon={<Kanban size={15} />}
+            label="Boards"
+            count={boardSurfaces.length}
+            open={openSections.boards}
+            onToggle={() => toggleSection("boards")}
+            active={view.kind === "kanban"}
+          >
+            {boardSurfaces.length === 0 && (
+              <div className="px-2 py-1 text-xs text-muted">No boards yet — enable a plugin with a board view.</div>
+            )}
+            {boardSurfaces.map((s) => (
+              <NavItem
+                key={s.slug}
+                active={view.kind === "kanban" && view.slug === s.slug}
+                onClick={() =>
+                  s.groupBy
+                    ? setView({ kind: "kanban", slug: s.slug, object: s.object!, groupBy: s.groupBy })
+                    : setView({ kind: "object", slug: s.object! })
+                }
+                icon={<span className="text-[13px] leading-none">{s.icon}</span>}
+                label={s.label}
+              />
+            ))}
+          </NavSection>
 
-          <div className="px-2 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-muted">Account</div>
-          <NavItem active={view.kind === "workspace"} onClick={() => setView({ kind: "workspace" })} icon={<Boxes size={15} />} label="Workspace" badge={me.role} />
-          <NavItem active={view.kind === "profile"} onClick={() => setView({ kind: "profile" })} icon={<UserCircle size={15} />} label="Profile" />
+          {/* Platform — plugins, marketplace, AI, automations, connectors, events */}
+          <NavSection
+            icon={<Puzzle size={15} />}
+            label="Platform"
+            open={openSections.platform}
+            onToggle={() => toggleSection("platform")}
+            active={["plugins", "marketplace", "ai", "automations", "connectors", "events"].includes(view.kind)}
+          >
+            <NavItem active={view.kind === "plugins"} onClick={() => setView({ kind: "plugins" })} icon={<Puzzle size={15} />} label="Plugins" />
+            <NavItem active={view.kind === "marketplace"} onClick={() => setView({ kind: "marketplace" })} icon={<Store size={15} />} label="Marketplace" />
+            {me.role !== "viewer" && (
+              <NavItem active={view.kind === "ai"} onClick={() => setView({ kind: "ai" })} icon={<Bot size={15} />} label="AI Agent" />
+            )}
+            <NavItem active={view.kind === "automations"} onClick={() => setView({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
+            {me.role !== "viewer" && (
+              <NavItem active={view.kind === "connectors"} onClick={() => setView({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
+            )}
+            <NavItem active={view.kind === "events"} onClick={() => setView({ kind: "events" })} icon={<Zap size={15} />} label="Events" />
+          </NavSection>
+
+          {/* Account — workspace, profile, appearance */}
+          <NavSection
+            icon={<UserCircle size={15} />}
+            label="Account"
+            open={openSections.account}
+            onToggle={() => toggleSection("account")}
+            active={["workspace", "profile", "settings"].includes(view.kind)}
+          >
+            <NavItem active={view.kind === "workspace"} onClick={() => setView({ kind: "workspace" })} icon={<Boxes size={15} />} label="Workspace" badge={me.role} />
+            <NavItem active={view.kind === "profile"} onClick={() => setView({ kind: "profile" })} icon={<UserCircle size={15} />} label="Profile" />
+            <NavItem active={view.kind === "settings"} onClick={() => setView({ kind: "settings" })} icon={<Palette size={15} />} label="Appearance" />
+          </NavSection>
         </nav>
 
         <div className="border-t border-border p-3 text-xs">
