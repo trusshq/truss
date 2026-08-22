@@ -402,14 +402,52 @@ export default function DashboardPage() {
       return next;
     });
 
-  // Ctrl/Cmd+K command palette
+  // Ctrl/Cmd+K command palette + keyboard shortcuts
   useEffect(() => {
+    let lastKey = "";
+    let lastTime = 0;
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen((v) => !v);
+        return;
       }
       if (e.key === "Escape") setPaletteOpen(false);
+
+      // ignore shortcuts while typing in inputs/textareas/selects
+      const el = e.target as HTMLElement | null;
+      const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+      if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+
+      const k = e.key.toLowerCase();
+      const now = Date.now();
+      const gSeq = lastKey === "g" && now - lastTime < 900;
+
+      if (k === "/") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("truss:focus-search"));
+        lastKey = "";
+        return;
+      }
+      if (gSeq) {
+        const nav: Record<string, View> = {
+          h: { kind: "home" },
+          a: { kind: "agents" },
+          p: { kind: "plugins" },
+          m: { kind: "marketplace" },
+          e: { kind: "events" },
+          i: { kind: "ai" },
+          s: { kind: "settings" },
+        };
+        if (nav[k]) {
+          e.preventDefault();
+          setView(nav[k]);
+        }
+        lastKey = "";
+        return;
+      }
+      lastKey = k;
+      lastTime = now;
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -615,6 +653,10 @@ function HomeView({
   const [recentEvents, setRecentEvents] = useState<
     { id: string; type: string; created_at: string }[]
   >([]);
+  const [aiKeysCount, setAiKeysCount] = useState(0);
+  const [agentsCount, setAgentsCount] = useState(0);
+  const [membersCount, setMembersCount] = useState(1);
+  const [checklistDismissed, setChecklistDismissed] = useState(false);
 
   const enabled = plugins.filter((p) => p.installed && p.enabled);
 
@@ -633,11 +675,28 @@ function HomeView({
     api<{ id: string; type: string; created_at: string }[]>("/api/events?limit=6")
       .then(setRecentEvents)
       .catch(() => {});
+    // onboarding signals
+    api<AiKeyInfo[]>("/api/ai/keys").then((k) => setAiKeysCount(k.length)).catch(() => {});
+    api<AgentInfo[]>("/api/agents").then((a) => setAgentsCount(a.length)).catch(() => {});
+    api<{ members?: unknown[] } | unknown[]>("/api/workspace/members")
+      .then((m) => setMembersCount(Array.isArray(m) ? m.length : (m as { members?: unknown[] }).members?.length ?? 1))
+      .catch(() => {});
   }, [objects]);
 
   const totalRecords = Object.values(counts).reduce((a, b) => a + b, 0);
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+
+  // onboarding checklist — computed from live workspace state
+  const checklist = [
+    { label: "Install a plugin", done: enabled.length > 0, view: { kind: "marketplace" } as View },
+    { label: "Create your first record", done: totalRecords > 0, view: (objects[0] ? { kind: "object", slug: objects[0].slug } : { kind: "marketplace" }) as View },
+    { label: "Add an AI key", done: aiKeysCount > 0, view: { kind: "ai" } as View },
+    { label: "Hire an AI employee", done: agentsCount > 0, view: { kind: "agents" } as View },
+    { label: "Invite a teammate", done: membersCount > 1, view: { kind: "settings" } as View },
+  ];
+  const doneCount = checklist.filter((c) => c.done).length;
+  const allDone = doneCount === checklist.length;
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -648,6 +707,40 @@ function HomeView({
         {me.tenant_name} · {enabled.length} active plugin{enabled.length === 1 ? "" : "s"} ·{" "}
         {totalRecords} records across {objects.length} objects
       </p>
+
+      {/* onboarding checklist */}
+      {!allDone && !checklistDismissed && (
+        <div className="mt-5 rounded-xl border border-accent/30 bg-accent/5 p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold">🚀 Get started</span>
+              <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent">
+                {doneCount}/{checklist.length}
+              </span>
+            </div>
+            <button onClick={() => setChecklistDismissed(true)} className="text-xs text-muted hover:text-foreground">Dismiss</button>
+          </div>
+          <div className="mt-3 grid gap-1.5 sm:grid-cols-2">
+            {checklist.map((c) => (
+              <button
+                key={c.label}
+                onClick={() => !c.done && setView(c.view)}
+                disabled={c.done}
+                className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition ${
+                  c.done ? "text-muted" : "hover:bg-accent/10"
+                }`}
+              >
+                <span className={`flex h-4 w-4 items-center justify-center rounded-full border text-[10px] ${
+                  c.done ? "border-success bg-success/20 text-success" : "border-border"
+                }`}>
+                  {c.done ? "✓" : ""}
+                </span>
+                <span className={c.done ? "line-through" : ""}>{c.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* stat cards */}
       <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -1164,7 +1257,38 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [trash, setTrash] = useState<TrashItem[]>([]);
   const [showTrash, setShowTrash] = useState(false);
+  const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
+  const [showCols, setShowCols] = useState(false);
   const PAGE_SIZE = 25;
+
+  // per-object column visibility, persisted to localStorage
+  useEffect(() => {
+    if (!object) return;
+    try {
+      const raw = localStorage.getItem(`truss.cols.${object.slug}`);
+      setHiddenCols(raw ? new Set(JSON.parse(raw) as string[]) : new Set());
+    } catch {
+      setHiddenCols(new Set());
+    }
+    setShowCols(false);
+  }, [object?.slug]);
+
+  function toggleCol(slug: string) {
+    if (!object) return;
+    setHiddenCols((prev) => {
+      const next = new Set(prev);
+      if (next.has(slug)) next.delete(slug);
+      else next.add(slug);
+      try {
+        localStorage.setItem(`truss.cols.${object.slug}`, JSON.stringify([...next]));
+      } catch {
+        /* private mode */
+      }
+      return next;
+    });
+  }
+
+  const visibleFields = object ? object.fields.filter((f) => !hiddenCols.has(f.slug)) : [];
 
   // debounce search input
   useEffect(() => {
@@ -1174,6 +1298,14 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
     }, 250);
     return () => clearTimeout(t);
   }, [search]);
+
+  // "/" keyboard shortcut focuses this search box
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onFocus = () => searchRef.current?.focus();
+    window.addEventListener("truss:focus-search", onFocus);
+    return () => window.removeEventListener("truss:focus-search", onFocus);
+  }, []);
 
   const load = useCallback(async () => {
     if (!object) return;
@@ -1365,6 +1497,24 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
           </p>
         </div>
         <div className="flex gap-2">
+          <div className="relative">
+            <button
+              onClick={() => setShowCols((v) => !v)}
+              className={`flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition hover:border-border-strong ${showCols ? "text-foreground" : "text-muted"}`}
+            >
+              <LayoutGrid size={13} /> Columns
+            </button>
+            {showCols && (
+              <div className="absolute right-0 z-20 mt-1 w-48 rounded-xl border border-border bg-card p-2 shadow-lg">
+                {object.fields.map((f) => (
+                  <label key={f.slug} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs hover:bg-background">
+                    <input type="checkbox" checked={!hiddenCols.has(f.slug)} onChange={() => toggleCol(f.slug)} />
+                    {f.name}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             onClick={() => exportCsv()}
             className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted transition hover:border-border-strong hover:text-foreground"
@@ -1384,8 +1534,9 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
           <div className="relative">
             <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" />
             <input
+              ref={searchRef}
               className={input + " w-52 pl-8"}
-              placeholder={`Search ${object.name_plural.toLowerCase()}…`}
+              placeholder={`Search ${object.name_plural.toLowerCase()}…  ( / )`}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -1476,7 +1627,7 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-card text-left text-xs uppercase tracking-wide text-muted">
-              {object.fields.map((f) => (
+              {visibleFields.map((f) => (
                 <th key={f.slug} className="px-3 py-2 font-medium">{f.name}</th>
               ))}
               <th className="px-3 py-2" />
@@ -1486,7 +1637,7 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
             {loading &&
               Array.from({ length: 4 }).map((_, i) => (
                 <tr key={`sk-${i}`} className="border-b border-border/50">
-                  {object.fields.map((f) => (
+                  {visibleFields.map((f) => (
                     <td key={f.slug} className="px-3 py-2.5">
                       <div className="skeleton h-4 w-3/4" />
                     </td>
@@ -1497,7 +1648,7 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
             {!loading &&
               rows.map((r) => (
                 <tr key={r.id} className="group border-b border-border/50 last:border-0 hover:bg-card/50">
-                  {object.fields.map((f) => (
+                  {visibleFields.map((f) => (
                     <td key={f.slug} className="max-w-[220px] truncate px-3 py-2">
                       {renderCell(r.data[f.slug], f.type)}
                     </td>
@@ -1548,7 +1699,7 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
               ))}
             {!loading && rows.length === 0 && (
               <tr>
-                <td colSpan={object.fields.length + 1} className="px-3 py-10 text-center text-muted">
+                <td colSpan={visibleFields.length + 1} className="px-3 py-10 text-center text-muted">
                   {debouncedSearch
                     ? `No ${object.name_plural.toLowerCase()} match “${debouncedSearch}”.`
                     : `No ${object.name_plural.toLowerCase()} yet — create the first one.`}
