@@ -51,12 +51,15 @@ jobs:
         run: uv sync --no-install-project
 
       - name: Start kernel
+        # Call the venv binary directly: `uv run` would try to (re)install the
+        # local package, whose layout (src/kernel) isn't installable — same fix
+        # as the Dockerfile.
         run: |
-          nohup uv run uvicorn truss_kernel.main:app --host 127.0.0.1 --port 8000 > kernel.log 2>&1 &
+          nohup .venv/bin/uvicorn truss_kernel.main:app --host 127.0.0.1 --port 8000 > kernel.log 2>&1 &
           echo "kernel starting (pid $!)"
 
       - name: Run all smoke suites
-        run: uv run python run_all_tests.py
+        run: .venv/bin/python run_all_tests.py
 
       - name: Kernel logs (on failure)
         if: failure()
