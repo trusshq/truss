@@ -14,7 +14,7 @@ jobs:
       run:
         working-directory: kernel
     env:
-      TRUSS_DATABASE_URL: postgresql+asyncpg://truss:truss@127.0.0.1:5432/truss
+      TRUSS_DATABASE_URL: postgresql+asyncpg://truss:ci-pg-pw-not-for-prod@127.0.0.1:5432/truss
       TRUSS_JWT_SECRET: ci-jwt-secret-not-for-prod
       TRUSS_AI_VAULT_SECRET: ci-vault-secret-not-for-prod
       TRUSS_DEBUG: "false"
@@ -23,13 +23,13 @@ jobs:
       TRUSS_TEST_PG_PORT: "5432"
       TRUSS_TEST_PG_DB: truss
       TRUSS_TEST_PG_USER: truss
-      TRUSS_TEST_PG_PASSWORD: "***"
+      TRUSS_TEST_PG_PASSWORD: "ci-pg-pw-not-for-prod"
     services:
       postgres:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: truss
-          POSTGRES_PASSWORD: "***"
+          POSTGRES_PASSWORD: "ci-pg-pw-not-for-prod"
           POSTGRES_DB: truss
         ports:
           - 5432:5432
