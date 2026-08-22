@@ -41,6 +41,7 @@ SUITES = [
     "devplatform_smoke_test.py",
     "chatcontrol_smoke_test.py",
     "crm_app_smoke_test.py",
+    "aidepth_smoke_test.py",
 ]
 
 

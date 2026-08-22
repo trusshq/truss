@@ -63,6 +63,7 @@ import {
   type ApiKeyInfo,
   type BudgetLedger,
   type GoalInfo,
+  type GlobalSearchResult,
   type HistoryEntry,
   type NotificationInfo,
   type ObjectCount,
@@ -985,13 +986,39 @@ function CommandPalette({
 }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
+  const [hits, setHits] = useState<GlobalSearchResult | null>(null);
+  const [searching, setSearching] = useState(false);
 
-  const items = useMemo(() => {
+  // Debounced live global search (Phase I) — records, agents, goals
+  useEffect(() => {
+    if (!open) return;
+    const needle = q.trim();
+    if (needle.length < 2) {
+      setHits(null);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await api<GlobalSearchResult>(`/api/search?q=${encodeURIComponent(needle)}&limit=5`);
+        setHits(res);
+      } catch {
+        setHits(null);
+      } finally {
+        setSearching(false);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q, open]);
+
+  const navItems = useMemo(() => {
     const platform: { label: string; icon: React.ReactNode; view: View }[] = [
       { label: "Home", icon: <Home size={14} />, view: { kind: "home" } },
+      { label: "Chat", icon: <MessageSquare size={14} />, view: { kind: "chat" } },
       { label: "Plugins", icon: <Puzzle size={14} />, view: { kind: "plugins" } },
       { label: "Marketplace", icon: <Store size={14} />, view: { kind: "marketplace" } },
-      { label: "AI Agent", icon: <Bot size={14} />, view: { kind: "ai" } },
+      { label: "AI Keys", icon: <Bot size={14} />, view: { kind: "ai" } },
       { label: "AI Employees", icon: <Users size={14} />, view: { kind: "agents" } },
       { label: "Automations", icon: <Cog size={14} />, view: { kind: "automations" } },
       { label: "Connectors", icon: <Cable size={14} />, view: { kind: "connectors" } },
@@ -1006,16 +1033,43 @@ function CommandPalette({
           ? ({ kind: "kanban", slug: s.slug, object: s.object!, groupBy: s.groupBy } as View)
           : ({ kind: "object", slug: s.object! } as View),
     }));
-    const all = [...apps, ...platform];
-    if (!q.trim()) return all;
-    const needle = q.toLowerCase();
-    return all.filter((i) => i.label.toLowerCase().includes(needle));
-  }, [q, surfaces]);
+    return [...apps, ...platform];
+  }, [surfaces]);
+
+  // Combined result list: nav matches first, then live record/agent/goal hits
+  const items = useMemo(() => {
+    type PaletteItem = { label: string; sub?: string; icon: React.ReactNode; view: View };
+    const needle = q.trim().toLowerCase();
+    const navMatches: PaletteItem[] = (needle
+      ? navItems.filter((i) => i.label.toLowerCase().includes(needle))
+      : navItems
+    ).map((i) => ({ label: i.label, icon: i.icon, view: i.view }));
+    const recordHits: PaletteItem[] = (hits?.records ?? []).map((r) => ({
+      label: `${r.title}`,
+      sub: `${r.icon} ${r.object_name}${r.snippet ? " · " + r.snippet : ""}`,
+      icon: <span className="text-sm leading-none">{r.icon}</span>,
+      view: { kind: "object", slug: r.object } as View,
+    }));
+    const agentHits: PaletteItem[] = (hits?.agents ?? []).map((a) => ({
+      label: a.name,
+      sub: `🤖 AI employee · ${a.role || "no role"}`,
+      icon: <span className="text-sm leading-none">{a.icon || "🤖"}</span>,
+      view: { kind: "agents" } as View,
+    }));
+    const goalHits: PaletteItem[] = (hits?.goals ?? []).map((g) => ({
+      label: g.title,
+      sub: `🎯 Goal · ${g.status}`,
+      icon: <span className="text-sm leading-none">🎯</span>,
+      view: { kind: "goals" } as View,
+    }));
+    return [...navMatches, ...recordHits, ...agentHits, ...goalHits];
+  }, [q, navItems, hits]);
 
   useEffect(() => {
     if (open) {
       setQ("");
       setSel(0);
+      setHits(null);
     }
   }, [open]);
 
@@ -1051,15 +1105,18 @@ function CommandPalette({
                 setView(items[sel].view);
               }
             }}
-            placeholder="Search apps and views…"
+            placeholder="Search everything — apps, records, people, goals…"
             className="w-full bg-transparent py-3 text-sm outline-none placeholder:text-faint"
           />
+          {searching && (
+            <span className="inline-block h-3 w-3 animate-spin rounded-full border border-accent border-t-transparent" />
+          )}
           <kbd className="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted">esc</kbd>
         </div>
         <div className="max-h-72 overflow-y-auto p-1.5">
           {items.map((item, i) => (
             <button
-              key={item.label}
+              key={`${item.label}-${i}`}
               onClick={() => setView(item.view)}
               onMouseEnter={() => setSel(i)}
               className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition ${
@@ -1067,7 +1124,12 @@ function CommandPalette({
               }`}
             >
               {item.icon}
-              <span className="flex-1">{item.label}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{item.label}</span>
+                {item.sub && (
+                  <span className="block truncate text-[11px] text-muted">{item.sub}</span>
+                )}
+              </span>
               {i === sel && <span className="text-[10px] text-muted">↵</span>}
             </button>
           ))}

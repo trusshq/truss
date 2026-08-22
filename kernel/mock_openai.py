@@ -65,6 +65,21 @@ class Handler(BaseHTTPRequestHandler):
                 tool_call = _tc("call_mock_objs", "kernel__list_objects", {})
             elif "list agents" in last_user or "who are" in last_user or "employees" in last_user:
                 tool_call = _tc("call_mock_agents", "kernel__list_agents", {})
+            elif ("create" in last_user or "build" in last_user) and ("object" in last_user or "table" in last_user) and "field" not in last_user:
+                tool_call = _tc("call_mock_obj", "kernel__create_object", {
+                    "slug": "project", "name": "Project", "icon": "📁",
+                    "fields": [
+                        {"slug": "name", "name": "Name", "type": "text", "required": True},
+                        {"slug": "budget", "name": "Budget", "type": "currency"},
+                        {"slug": "deadline", "name": "Deadline", "type": "date"},
+                    ],
+                })
+            elif "add" in last_user and "field" in last_user:
+                tool_call = _tc("call_mock_field", "kernel__add_field", {
+                    "object": "lead", "slug": "priority", "name": "Priority", "type": "select",
+                })
+            elif "find" in last_user or "search everywhere" in last_user or "search the workspace" in last_user:
+                tool_call = _tc("call_mock_gsearch", "kernel__global_search", {"q": "Acme"})
             elif wants_analytics:
                 tool_call = _tc("call_mock_analytics", "kernel__analytics",
                                 {"object": "lead", "metric": "count"})
@@ -94,6 +109,12 @@ class Handler(BaseHTTPRequestHandler):
                 answer = "Here are the objects in your workspace."
             elif "list agents" in last_user or "who are" in last_user or "employees" in last_user:
                 answer = "Here are your AI employees."
+            elif ("create" in last_user or "build" in last_user) and ("object" in last_user or "table" in last_user) and "field" not in last_user:
+                answer = "Done — I created the 'Project' object with 3 fields (name, budget, deadline)."
+            elif "add" in last_user and "field" in last_user:
+                answer = "Done — I added the 'priority' select field to leads."
+            elif "find" in last_user or "search everywhere" in last_user or "search the workspace" in last_user:
+                answer = "I searched the whole workspace for 'Acme' — here's what I found."
             else:
                 answer = "Done — I created the lead 'AI Test Lead' (ai-test@example.com) with source Website."
             choice_msg = {

@@ -505,6 +505,14 @@ export interface AnalyticsResult {
   summary?: { count: number; sum: number; avg: number; min: number; max: number };
 }
 
+export interface GlobalSearchResult {
+  query: string;
+  records: { object: string; object_name: string; icon: string; id: string; title: string; snippet: string }[];
+  agents: { id: string; name: string; role: string; icon: string; status: string }[];
+  goals: { id: string; title: string; status: string }[];
+  total: number;
+}
+
 export interface AgentInfo {
   id: string;
   name: string;

@@ -11,11 +11,12 @@ import json
 import logging
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from truss_kernel.ai import client as ai_client
 from truss_kernel.ai.vault import decrypt_secret
+from truss_kernel.events import bus
 from truss_kernel.models.ai import AiKey
 from truss_kernel.models.agent import Agent, AgentStatus, AgentTask, TaskStatus
 from truss_kernel.models.metadata import FieldDef, ObjectDef
@@ -190,6 +191,18 @@ async def collect_tools(db: AsyncSession, tenant_id: uuid.UUID, role: str = "mem
         ["object"],
         "search_records",
     )
+    _add_control(
+        "kernel__global_search",
+        "Search the ENTIRE workspace at once — records in every object, plus AI employees and "
+        "goals. Use this when the user asks to find something but you don't know which object "
+        "it lives in. Arguments: q (required search text), limit (optional, default 5 per group).",
+        {
+            "q": {"type": "string", "description": "Search text"},
+            "limit": {"type": "integer", "description": "Max results per group (default 5)"},
+        },
+        ["q"],
+        "global_search",
+    )
 
     # Mutation tools: member+
     if role in MUTATE_ROLES:
@@ -256,6 +269,50 @@ async def collect_tools(db: AsyncSession, tenant_id: uuid.UUID, role: str = "mem
             },
             ["name"],
             "hire_agent",
+        )
+        _add_control(
+            "kernel__create_object",
+            "Create a brand-new data object (table) from a natural-language description — the "
+            "schema builder. Arguments: slug (required, lowercase_snake), name (required), "
+            "fields (required array of {slug, name, type}), icon (optional emoji), "
+            "description (optional). Field types: text, textarea, number, currency, boolean, "
+            "date, datetime, email, phone, url, select, multiselect.",
+            {
+                "slug": {"type": "string", "description": "lowercase_snake slug, e.g. 'project'"},
+                "name": {"type": "string", "description": "Display name, e.g. 'Project'"},
+                "fields": {
+                    "type": "array",
+                    "description": "Field definitions",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {"type": "string"},
+                            "name": {"type": "string"},
+                            "type": {"type": "string"},
+                            "required": {"type": "boolean"},
+                        },
+                        "required": ["slug", "name", "type"],
+                    },
+                },
+                "icon": {"type": "string", "description": "Emoji icon"},
+                "description": {"type": "string"},
+            },
+            ["slug", "name", "fields"],
+            "create_object",
+        )
+        _add_control(
+            "kernel__add_field",
+            "Add a new field to an existing object. Arguments: object (required slug), "
+            "slug (required), name (required), type (required field type), required (optional bool).",
+            {
+                "object": {"type": "string", "description": "Object slug to extend"},
+                "slug": {"type": "string", "description": "Field slug"},
+                "name": {"type": "string", "description": "Field display name"},
+                "type": {"type": "string", "description": "Field type"},
+                "required": {"type": "boolean"},
+            },
+            ["object", "slug", "name", "type"],
+            "add_field",
         )
 
     return openai_tools, index
@@ -428,6 +485,93 @@ async def _execute_tool(db: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UU
         await db.commit()
         await db.refresh(a)
         return {"hired": {"id": str(a.id), "name": a.name, "role": a.role, "status": a.status.value}}
+
+    # ---- Phase I: global search (RAG-lite retrieval) ----
+    if action == "global_search":
+        from truss_kernel.routes.search import run_global_search
+        q = args.get("q")
+        if not q or not str(q).strip():
+            return {"error": "q is required"}
+        return await run_global_search(db, tenant_id, str(q), int(args.get("limit", 5)))
+
+    # ---- Phase I: natural-language schema builder ----
+    if action == "create_object":
+        from truss_kernel.models.metadata import FieldType
+        slug = (args.get("slug") or "").strip().lower().replace("-", "_").replace(" ", "_")
+        name = (args.get("name") or "").strip()
+        fields = args.get("fields") or []
+        if not slug or not name:
+            return {"error": "slug and name are required"}
+        if not slug.replace("_", "").isalnum():
+            return {"error": "slug must be lowercase letters, digits, and underscores"}
+        if not isinstance(fields, list) or not fields:
+            return {"error": "fields must be a non-empty array of {slug, name, type}"}
+        clash = (await db.execute(select(ObjectDef).where(
+            ObjectDef.tenant_id == tenant_id, ObjectDef.slug == slug
+        ))).scalar_one_or_none()
+        if clash:
+            return {"error": f"object '{slug}' already exists"}
+        obj = ObjectDef(
+            tenant_id=tenant_id, slug=slug, name=name,
+            name_plural=name + "s", description=args.get("description") or "",
+            icon=args.get("icon") or "📦", plugin_id="", is_builtin=False,
+        )
+        db.add(obj)
+        await db.flush()
+        valid_types = {t.value for t in FieldType}
+        for i, f in enumerate(fields):
+            if not isinstance(f, dict) or not f.get("slug") or not f.get("name"):
+                return {"error": f"field #{i + 1} needs slug and name"}
+            ftype = str(f.get("type", "text")).lower()
+            if ftype not in valid_types:
+                ftype = "text"
+            fslug = str(f["slug"]).strip().lower().replace("-", "_").replace(" ", "_")
+            db.add(FieldDef(
+                object_id=obj.id, slug=fslug, name=str(f["name"]).strip(),
+                type=FieldType(ftype), required=bool(f.get("required", False)),
+                position=i, options={},
+            ))
+        await db.flush()
+        await bus.emit(db, tenant_id=tenant_id, event_type="object.created",
+                       payload={"object": slug, "actor_type": actor_type}, actor_id=user_id)
+        await db.commit()
+        return {"created_object": {"slug": slug, "name": name, "fields": len(fields)}}
+
+    if action == "add_field":
+        from truss_kernel.models.metadata import FieldType
+        if not object_slug:
+            return {"error": "object is required"}
+        obj = (await db.execute(select(ObjectDef).where(
+            ObjectDef.tenant_id == tenant_id, ObjectDef.slug == object_slug
+        ))).scalar_one_or_none()
+        if obj is None:
+            return {"error": f"object '{object_slug}' not found"}
+        fslug = (args.get("slug") or "").strip().lower().replace("-", "_").replace(" ", "_")
+        fname = (args.get("name") or "").strip()
+        ftype = str(args.get("type", "text")).lower()
+        valid_types = {t.value for t in FieldType}
+        if not fslug or not fname:
+            return {"error": "slug and name are required"}
+        if ftype not in valid_types:
+            return {"error": f"unknown field type '{ftype}'; valid: {sorted(valid_types)}"}
+        clash = (await db.execute(select(FieldDef).where(
+            FieldDef.object_id == obj.id, FieldDef.slug == fslug
+        ))).scalar_one_or_none()
+        if clash:
+            return {"error": f"field '{fslug}' already exists on '{object_slug}'"}
+        max_pos = (await db.scalar(
+            select(func.max(FieldDef.position)).where(FieldDef.object_id == obj.id)
+        )) or 0
+        db.add(FieldDef(
+            object_id=obj.id, slug=fslug, name=fname, type=FieldType(ftype),
+            required=bool(args.get("required", False)), position=max_pos + 1, options={},
+        ))
+        await db.flush()
+        await bus.emit(db, tenant_id=tenant_id, event_type="object.field_added",
+                       payload={"object": object_slug, "field": fslug, "actor_type": actor_type},
+                       actor_id=user_id)
+        await db.commit()
+        return {"added_field": {"object": object_slug, "slug": fslug, "type": ftype}}
 
     if action in ("create_record", "update_record", "query_records"):
         if not object_slug:
