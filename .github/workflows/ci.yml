@@ -50,6 +50,11 @@ jobs:
         # installable; we run the source tree directly. Same fix as Dockerfile.
         run: uv sync --no-install-project
 
+      - name: Sanity check (import app + venv layout)
+        run: |
+          ls -la .venv/bin | head -20
+          .venv/bin/python -c "import truss_kernel.main; print('import OK')"
+
       - name: Run all smoke suites
         # The runner spawns the kernel itself (TRUSS_TEST_SPAWN_KERNEL=1) so it
         # stays alive for the whole run — a backgrounded `nohup` from a prior
@@ -61,6 +66,13 @@ jobs:
       - name: Kernel logs (on failure)
         if: failure()
         run: tail -n 120 kernel.log
+
+      - name: Upload kernel log (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-log
+          path: kernel/kernel.log
 
   frontend:
     name: Frontend — production build
