@@ -14,7 +14,7 @@ from truss_kernel.events import bus
 from truss_kernel.migrate import run_migrations
 from truss_kernel.models.base import Base
 from truss_kernel.plugins.registry import registry
-from truss_kernel.routes import agents, ai, apikeys, auth, automations, connectors, events, marketplace, objects, orchestration, org, plugins, records, workspace
+from truss_kernel.routes import agents, ai, apikeys, auth, automations, connectors, events, insights, marketplace, objects, orchestration, org, plugins, records, workspace
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("truss")
@@ -63,6 +63,7 @@ app.include_router(ai.router)
 app.include_router(apikeys.router)
 app.include_router(org.router)
 app.include_router(orchestration.router)
+app.include_router(insights.router)
 app.include_router(agents.router)
 app.include_router(automations.router)
 app.include_router(connectors.router)

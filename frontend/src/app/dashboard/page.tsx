@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Activity,
+  BarChart3,
   Bell,
   Bot,
   Boxes,
@@ -52,21 +53,26 @@ import {
   setToken,
   type AgentInfo,
   type AgentRunResult,
+  type AgentScorecard,
   type AgentTaskInfo,
   type AiKeyInfo,
+  type AnalyticsResult,
   type ApiKeyInfo,
   type BudgetLedger,
   type GoalInfo,
   type HistoryEntry,
   type NotificationInfo,
+  type ObjectCount,
   type OrgNode,
   type PipelineInfo,
   type PipelineRunResult,
   type ReviewInbox,
   type ScheduleInfo,
   type TaskCommentInfo,
+  type TimelineItem,
   type TrashItem,
   type TriggerInfo,
+  type WorkspaceOverview,
   type ChatResult,
   type Invite,
   type MarketplacePlugin,
@@ -94,6 +100,7 @@ type View =
   | { kind: "goals" }
   | { kind: "review" }
   | { kind: "autopilot" }
+  | { kind: "insights" }
   | { kind: "automations" }
   | { kind: "connectors" }
   | { kind: "settings" }
@@ -350,6 +357,7 @@ function SidebarContent({
           <NavItem active={view.kind === "goals"} onClick={() => go({ kind: "goals" })} icon={<Target size={15} />} label="Goals" />
           <NavItem active={view.kind === "review"} onClick={() => go({ kind: "review" })} icon={<Inbox size={15} />} label="Review Inbox" />
           <NavItem active={view.kind === "autopilot"} onClick={() => go({ kind: "autopilot" })} icon={<Zap size={15} />} label="Autopilot" />
+          <NavItem active={view.kind === "insights"} onClick={() => go({ kind: "insights" })} icon={<BarChart3 size={15} />} label="Insights" />
           <NavItem active={view.kind === "automations"} onClick={() => go({ kind: "automations" })} icon={<Cog size={15} />} label="Automations" />
           {me.role !== "viewer" && (
             <NavItem active={view.kind === "connectors"} onClick={() => go({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
@@ -626,6 +634,7 @@ export default function DashboardPage() {
             {view.kind === "goals" && <GoalsView onChanged={refresh} />}
             {view.kind === "review" && <ReviewView onChanged={refresh} />}
             {view.kind === "autopilot" && <AutopilotView onChanged={refresh} />}
+            {view.kind === "insights" && <InsightsView />}
             {view.kind === "automations" && <AutomationsView />}
             {view.kind === "connectors" && <ConnectorsView />}
             {view.kind === "settings" && <SettingsView />}
@@ -4150,6 +4159,252 @@ function AutopilotView({ onChanged }: { onChanged: () => Promise<void> }) {
             </div>
           )))}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Phase D: Insights ---------------- */
+
+function InsightsView() {
+  const [overview, setOverview] = useState<WorkspaceOverview | null>(null);
+  const [objects, setObjects] = useState<ObjectCount[]>([]);
+  const [cards, setCards] = useState<AgentScorecard[]>([]);
+  const [timeline, setTimeline] = useState<TimelineItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // analytics explorer state
+  const [qObject, setQObject] = useState("");
+  const [qMetric, setQMetric] = useState("count");
+  const [qField, setQField] = useState("");
+  const [qResult, setQResult] = useState<AnalyticsResult | null>(null);
+  const [qBusy, setQBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const [ov, objs, cs, tl] = await Promise.all([
+        api<WorkspaceOverview>("/api/insights/overview"),
+        api<ObjectCount[]>("/api/insights/objects"),
+        api<AgentScorecard[]>("/api/insights/agents"),
+        api<TimelineItem[]>("/api/insights/timeline?limit=30"),
+      ]);
+      setOverview(ov);
+      setObjects(objs);
+      setCards(cs);
+      setTimeline(tl);
+      if (!qObject && objs.length > 0) setQObject(objs[0].slug);
+    } catch {
+      /* boot race */
+    } finally {
+      setLoading(false);
+    }
+  }, [qObject]);
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const selectedObj = objects.find((o) => o.slug === qObject);
+  const input = "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition focus:border-accent";
+
+  async function runQuery() {
+    if (!qObject) return;
+    setQBusy(true);
+    setQResult(null);
+    try {
+      const body: Record<string, unknown> = { object: qObject, metric: qMetric };
+      if (qField) body.field = qField;
+      const res = await api<AnalyticsResult>("/api/insights/query", { method: "POST", body });
+      setQResult(res);
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Query failed", "error");
+    } finally {
+      setQBusy(false);
+    }
+  }
+
+  const pct = (n: number | null) => (n === null ? "—" : `${Math.round(n * 100)}%`);
+  const maxRow = qResult?.rows?.length ? Math.max(...qResult.rows.map((r) => r.value ?? 0), 1) : 1;
+  const maxCount = qResult?.rows?.length ? Math.max(...qResult.rows.map((r) => r.count ?? 0), 1) : 1;
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div>
+        <h1 className="text-xl font-bold">Insights</h1>
+        <p className="mt-0.5 text-xs text-muted">Analytics, agent performance, and everything that happened.</p>
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-24 w-full rounded-xl" />)}</div>
+      ) : (
+        <>
+          {/* overview stats */}
+          {overview && (
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {[
+                { label: "AI employees", value: `${overview.agents_active} / ${overview.agents_total}`, sub: "active / total" },
+                { label: "Tasks", value: String(overview.tasks_total), sub: `${overview.tasks_done} done · ${overview.tasks_failed} failed` },
+                { label: "Completion rate", value: pct(overview.completion_rate), sub: "done vs finished" },
+                { label: "Tokens used", value: overview.tokens_total.toLocaleString(), sub: "across all agents" },
+              ].map((s) => (
+                <div key={s.label} className="rounded-xl border border-border bg-card p-4">
+                  <div className="text-[11px] uppercase tracking-wide text-muted">{s.label}</div>
+                  <div className="mt-1 text-2xl font-bold">{s.value}</div>
+                  <div className="mt-0.5 text-[11px] text-faint">{s.sub}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* object counts */}
+          <div className="rounded-xl border border-border bg-card p-4">
+            <h2 className="text-sm font-semibold">Records by object</h2>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {objects.map((o) => (
+                <div key={o.slug} className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2">
+                  <span className="text-base">{o.icon}</span>
+                  <div>
+                    <div className="text-sm font-semibold leading-none">{o.count}</div>
+                    <div className="mt-0.5 text-[10px] text-muted">{o.name_plural}</div>
+                  </div>
+                </div>
+              ))}
+              {objects.length === 0 && <p className="text-xs text-muted">No objects yet.</p>}
+            </div>
+          </div>
+
+          {/* analytics explorer */}
+          <div className="rounded-xl border border-border bg-card p-4">
+            <h2 className="text-sm font-semibold">Analytics explorer</h2>
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
+              <select className={input} value={qObject} onChange={(e) => { setQObject(e.target.value); setQField(""); setQResult(null); }}>
+                {objects.map((o) => <option key={o.slug} value={o.slug}>{o.icon} {o.name}</option>)}
+              </select>
+              <select className={input} value={qMetric} onChange={(e) => { setQMetric(e.target.value); setQResult(null); }}>
+                <option value="count">Count</option>
+                <option value="group_by">Group by field</option>
+                <option value="sum">Sum</option>
+                <option value="avg">Average</option>
+                <option value="min">Min</option>
+                <option value="max">Max</option>
+                <option value="time_series">Trend over time</option>
+              </select>
+              {(qMetric === "group_by" || ["sum", "avg", "min", "max"].includes(qMetric)) && (
+                <select className={input} value={qField} onChange={(e) => setQField(e.target.value)}>
+                  <option value="">— field —</option>
+                  {(selectedObj?.fields ?? []).map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              )}
+              <button disabled={qBusy || !qObject} onClick={runQuery} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                {qBusy ? "…" : "Run"}
+              </button>
+            </div>
+
+            {qResult && (
+              <div className="mt-4">
+                {qResult.metric === "count" && (
+                  <div className="text-3xl font-bold">{qResult.value}</div>
+                )}
+                {["sum", "avg", "min", "max"].includes(qResult.metric) && (
+                  <div className="flex items-end gap-3">
+                    <div className="text-3xl font-bold">{Number(qResult.value ?? 0).toLocaleString()}</div>
+                    {qResult.summary && (
+                      <div className="pb-1 text-[11px] text-muted">
+                        sum {qResult.summary.sum.toLocaleString()} · avg {Math.round(qResult.summary.avg).toLocaleString()} · min {qResult.summary.min.toLocaleString()} · max {qResult.summary.max.toLocaleString()}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {qResult.metric === "group_by" && qResult.rows && (
+                  <div className="space-y-1.5">
+                    {qResult.rows.map((r) => (
+                      <div key={r.key ?? ""} className="flex items-center gap-2">
+                        <div className="w-32 truncate text-xs text-muted">{r.key ?? ""}</div>
+                        <div className="h-4 flex-1 overflow-hidden rounded bg-background">
+                          <div className="h-full rounded bg-accent/70" style={{ width: `${Math.max(2, ((r.value ?? 0) / maxRow) * 100)}%` }} />
+                        </div>
+                        <div className="w-16 text-right text-xs font-semibold">{Number(r.value ?? 0).toLocaleString()}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {qResult.metric === "time_series" && qResult.rows && (
+                  <div className="flex h-24 items-end gap-1">
+                    {qResult.rows.map((r, i) => (
+                      <div key={i} className="flex-1 rounded-t bg-accent/70" style={{ height: `${Math.max(4, ((r.count ?? 0) / maxCount) * 100)}%` }} title={`${r.bucket ?? ""}: ${r.count ?? 0}`} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* agent scorecards */}
+          <div className="rounded-xl border border-border bg-card p-4">
+            <h2 className="text-sm font-semibold">AI employee performance</h2>
+            <div className="mt-3 space-y-2">
+              {cards.length === 0 && <p className="text-xs text-muted">No AI employees yet.</p>}
+              {cards.map((c) => (
+                <div key={c.agent_id} className="flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border border-border bg-background px-4 py-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="text-lg">{c.icon}</span>
+                    <div>
+                      <div className="truncate text-sm font-semibold">{c.name}</div>
+                      <div className="text-[10px] text-muted">{c.role || "—"}</div>
+                    </div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-sm font-bold">{c.tasks.done}<span className="text-faint">/{c.tasks.total}</span></div>
+                    <div className="text-[10px] text-muted">done</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-sm font-bold">{pct(c.completion_rate)}</div>
+                    <div className="text-[10px] text-muted">success</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-sm font-bold">{c.tokens.total_used.toLocaleString()}</div>
+                    <div className="text-[10px] text-muted">tokens</div>
+                  </div>
+                  {c.tokens.utilization !== null && (
+                    <div className="text-center">
+                      <div className={`text-sm font-bold ${c.tokens.utilization > 0.9 ? "text-danger" : ""}`}>{pct(c.tokens.utilization)}</div>
+                      <div className="text-[10px] text-muted">budget</div>
+                    </div>
+                  )}
+                  <div className="ml-auto">
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${c.status === "active" ? "bg-success/15 text-success" : "bg-border text-muted"}`}>{c.status}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* activity timeline */}
+          <div className="rounded-xl border border-border bg-card p-4">
+            <h2 className="text-sm font-semibold">Activity</h2>
+            <div className="mt-3 space-y-0">
+              {timeline.length === 0 && <p className="text-xs text-muted">Nothing yet.</p>}
+              {timeline.map((it) => (
+                <div key={it.kind + it.id} className="relative flex gap-3 pb-4 last:pb-0">
+                  <div className="flex flex-col items-center">
+                    <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${it.kind === "task" ? "bg-accent" : it.actor_type === "agent" ? "bg-success" : "bg-border"}`} />
+                    <span className="w-px flex-1 bg-border" />
+                  </div>
+                  <div className="min-w-0 pb-1">
+                    <div className="text-xs">
+                      <span className="font-semibold">{it.actor_name || (it.actor_type === "agent" ? "🤖" : "👤")}</span>{" "}
+                      <span className="text-muted">{it.title}</span>
+                      {it.detail && <span className="text-faint"> — {it.detail}</span>}
+                    </div>
+                    <div className="mt-0.5 text-[10px] text-faint">{it.at ? new Date(it.at).toLocaleString() : ""}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

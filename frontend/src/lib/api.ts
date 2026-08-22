@@ -435,6 +435,69 @@ export interface PipelineRunResult {
   error?: string;
 }
 
+/* ---------- Phase D: intelligence & insight ---------- */
+
+export interface ObjectCount {
+  slug: string;
+  name: string;
+  name_plural: string;
+  icon: string;
+  count: number;
+  fields: string[];
+}
+
+export interface AgentScorecard {
+  agent_id: string;
+  name: string;
+  role: string;
+  icon: string;
+  status: string;
+  tasks: { total: number; done: number; failed: number; rejected: number; pending: number };
+  completion_rate: number | null;
+  review: { needed_review: number; rejected: number };
+  tokens: { total_used: number; budget: number; utilization: number | null; per_completed_task: number | null };
+  runs_count: number;
+  last_finished_at: string | null;
+}
+
+export interface WorkspaceOverview {
+  agents_total: number;
+  agents_active: number;
+  tasks_total: number;
+  tasks_done: number;
+  tasks_failed: number;
+  completion_rate: number | null;
+  tokens_total: number;
+}
+
+export interface TimelineItem {
+  kind: "event" | "task";
+  id: string;
+  type: string;
+  title: string;
+  detail: string;
+  actor_type: string;
+  actor_id: string | null;
+  actor_name?: string;
+  at: string;
+}
+
+export interface AnalyticsRow {
+  key?: string;
+  value?: number;
+  bucket?: string;
+  count?: number;
+}
+
+export interface AnalyticsResult {
+  object: string;
+  metric: string;
+  field?: string;
+  value?: number;
+  rows?: AnalyticsRow[];
+  summary?: { count: number; sum: number; avg: number; min: number; max: number };
+}
+
 export interface AgentInfo {
   id: string;
   name: string;

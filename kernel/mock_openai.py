@@ -36,12 +36,28 @@ class Handler(BaseHTTPRequestHandler):
         messages = body.get("messages", [])
         has_tool_result = any(m.get("role") == "tool" for m in messages)
 
+        # find the last user message to decide which tool to simulate
+        last_user = ""
+        for m in reversed(messages):
+            if m.get("role") == "user" and isinstance(m.get("content"), str):
+                last_user = m["content"].lower()
+                break
+        wants_analytics = "how many" in last_user or "analytics" in last_user
+
         if not has_tool_result:
             # first turn: request a tool call
-            choice_msg = {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
+            if wants_analytics:
+                tool_call = {
+                    "id": "call_mock_analytics",
+                    "type": "function",
+                    "function": {
+                        "name": "kernel__analytics",
+                        "arguments": json.dumps({"object": "lead", "metric": "count"}),
+                    },
+                }
+                content = None
+            else:
+                tool_call = {
                     "id": "call_mock_1",
                     "type": "function",
                     "function": {
@@ -53,13 +69,22 @@ class Handler(BaseHTTPRequestHandler):
                             "status": "New",
                         }),
                     },
-                }],
+                }
+                content = None
+            choice_msg = {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [tool_call],
             }
         else:
             # second turn: final answer
+            if wants_analytics:
+                answer = "You have 5 leads in total."
+            else:
+                answer = "Done — I created the lead 'AI Test Lead' (ai-test@example.com) with source Website."
             choice_msg = {
                 "role": "assistant",
-                "content": "Done — I created the lead 'AI Test Lead' (ai-test@example.com) with source Website.",
+                "content": answer,
             }
 
         resp = {

@@ -19,6 +19,7 @@ from truss_kernel.ai.vault import decrypt_secret
 from truss_kernel.models.ai import AiKey
 from truss_kernel.models.plugin import PluginInstall
 from truss_kernel.plugins.registry import registry
+from truss_kernel.services import analytics
 from truss_kernel.services import records as svc
 
 logger = logging.getLogger("truss.ai")
@@ -84,6 +85,44 @@ async def collect_tools(db: AsyncSession, tenant_id: uuid.UUID) -> tuple[list[di
                 "action": tool.action,
                 "object": tool.object,
             }
+
+    # Kernel analytics tool (Phase D): always available, read-only. Lets the
+    # agent answer natural-language data questions ("how many leads this week?")
+    # by running structured aggregate queries over the record store.
+    analytics_fn = "kernel__analytics"
+    openai_tools.append({
+        "type": "function",
+        "function": {
+            "name": analytics_fn,
+            "description": (
+                "Run a read-only analytics query over business records. Use this to "
+                "answer questions like counts, totals, averages, breakdowns by field, "
+                "or trends over time. Arguments: object (required, e.g. 'lead'); "
+                "metric ('count'|'group_by'|'sum'|'avg'|'min'|'max'|'summary'|'time_series'); "
+                "field (the field to group or aggregate); value_field (for group_by sum/avg); "
+                "bucket ('day'|'week'|'month' for time_series); days (time_series window)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "object": {"type": "string", "description": "Object slug to query, e.g. 'lead'"},
+                    "metric": {"type": "string", "description": "count|group_by|sum|avg|min|max|summary|time_series"},
+                    "field": {"type": "string", "description": "Field to group or aggregate"},
+                    "value_field": {"type": "string", "description": "Numeric field for group_by sum/avg"},
+                    "bucket": {"type": "string", "description": "day|week|month for time_series"},
+                    "days": {"type": "integer", "description": "time_series window in days"},
+                    "limit": {"type": "integer", "description": "max group_by buckets"},
+                },
+                "required": ["object"],
+            },
+        },
+    })
+    index[analytics_fn] = {
+        "plugin_id": "kernel",
+        "tool_slug": "analytics",
+        "action": "analytics",
+        "object": None,
+    }
     return openai_tools, index
 
 
@@ -98,6 +137,13 @@ async def _execute_tool(db: AsyncSession, tenant_id: uuid.UUID, user_id: uuid.UU
     """
     action = spec["action"]
     object_slug = args.get("object") or spec.get("object")
+
+    # Phase D: read-only analytics (never writes, safe for agents)
+    if action == "analytics":
+        try:
+            return await analytics.run_query(db, tenant_id, dict(args))
+        except analytics.AnalyticsError as e:
+            return {"error": str(e)}
 
     if action in ("create_record", "update_record", "query_records"):
         if not object_slug:
