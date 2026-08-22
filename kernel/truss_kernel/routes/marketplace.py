@@ -35,6 +35,17 @@ class PublishIn(BaseModel):
     install: bool = True  # also install into the publishing tenant
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse '1.2.3' into (1, 2, 3) for comparison. Non-numeric parts -> 0."""
+    parts = []
+    for p in str(v).split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts) or (0,)
+
+
 # ---------------- publish (developer platform) ----------------
 
 @router.post("/publish", status_code=201)
@@ -47,35 +58,63 @@ async def publish_plugin(
 
     Validates strictly via the Plugin SDK, materializes plugin.json into the
     external plugins dir, re-discovers, and (optionally) installs it into the
-    publishing tenant. Rejects id collisions with builtins.
+    publishing tenant.
+
+    Versioning (Phase J): re-publishing an existing community plugin id is an
+    UPDATE — the new version must be strictly greater. Shadowing a builtin
+    plugin id is always rejected.
     """
     try:
         manifest = plugin_sdk.validate_manifest(body.manifest)
     except plugin_sdk.ManifestError as e:
         raise HTTPException(422, {"errors": e.errors}) from e
 
-    # never let a publish shadow a builtin plugin id
-    if registry.get(manifest.id) is not None:
-        existing = registry.get(manifest.id)
-        raise HTTPException(409, f"plugin id '{manifest.id}' already exists (v{existing.version})")
+    builtin_dir = Path(settings.builtin_plugins_dir) / manifest.id
+    if builtin_dir.exists():
+        raise HTTPException(409, f"plugin id '{manifest.id}' is a builtin and cannot be shadowed")
 
     ext_root = Path(settings.external_plugins_dir)
     plugin_dir = ext_root / manifest.id
+    manifest_path = plugin_dir / "plugin.json"
+
+    is_update = False
+    if manifest_path.exists():
+        # version update: require strictly greater version
+        try:
+            old = json.loads(manifest_path.read_text(encoding="utf-8"))
+            old_version = str(old.get("version", "0.0.0"))
+        except Exception:  # noqa: BLE001
+            old_version = "0.0.0"
+        if _version_tuple(manifest.version) <= _version_tuple(old_version):
+            raise HTTPException(
+                409,
+                f"version {manifest.version} is not greater than published {old_version}; bump the version to update",
+            )
+        is_update = True
+
     plugin_dir.mkdir(parents=True, exist_ok=True)
-    (plugin_dir / "plugin.json").write_text(
-        json.dumps(body.manifest, indent=2), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps(body.manifest, indent=2), encoding="utf-8")
     registry.discover()
 
     installed = False
     version = manifest.version
-    if body.install:
+    if is_update:
+        # bump the recorded version on every tenant install of this plugin
+        from sqlalchemy import select as sa_select, update as sa_update
+        from truss_kernel.models.plugin import PluginInstall
+        await db.execute(
+            sa_update(PluginInstall)
+            .where(PluginInstall.plugin_id == manifest.id)
+            .values(version=manifest.version)
+        )
+    elif body.install:
         inst = await registry.install(db, auth.tenant_id, manifest.id)
         installed = True
         version = inst.version
 
     await bus.emit(
-        db, tenant_id=auth.tenant_id, event_type="plugin.published",
+        db, tenant_id=auth.tenant_id,
+        event_type="plugin.version_updated" if is_update else "plugin.published",
         payload={"plugin_id": manifest.id, "version": manifest.version},
         actor_id=auth.user_id, plugin_id=manifest.id,
     )
@@ -85,9 +124,71 @@ async def publish_plugin(
         "plugin_id": manifest.id,
         "version": version,
         "installed": installed,
+        "updated": is_update,
         "objects": len(manifest.objects),
         "tools": len(manifest.tools),
     }
+
+
+@router.get("/published")
+async def list_published(auth: AuthContext = Depends(require_viewer)):
+    """Community plugins published on this instance (external plugins dir)."""
+    ext_root = Path(settings.external_plugins_dir)
+    items = []
+    for manifest_path in sorted(ext_root.glob("*/plugin.json")) if ext_root.exists() else []:
+        m = registry.get(manifest_path.parent.name)
+        if m is None:
+            continue
+        items.append({
+            "id": m.id,
+            "name": m.name,
+            "version": m.version,
+            "description": m.description,
+            "objects": len(m.objects),
+            "tools": len(m.tools),
+        })
+    return {"items": items, "total": len(items)}
+
+
+@router.delete("/publish/{plugin_id}")
+async def unpublish_plugin(
+    plugin_id: str,
+    auth: AuthContext = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a community plugin from the marketplace.
+
+    The manifest is deleted from the external dir and the plugin is disabled
+    for all tenants — existing objects and DATA are preserved (disable, not
+    delete). Builtin plugins cannot be unpublished.
+    """
+    import shutil
+
+    builtin_dir = Path(settings.builtin_plugins_dir) / plugin_id
+    if builtin_dir.exists():
+        raise HTTPException(409, f"plugin '{plugin_id}' is a builtin and cannot be unpublished")
+
+    ext_dir = Path(settings.external_plugins_dir) / plugin_id
+    if not (ext_dir / "plugin.json").exists():
+        raise HTTPException(404, f"plugin '{plugin_id}' is not published")
+
+    shutil.rmtree(ext_dir, ignore_errors=True)
+    registry.discover()
+
+    # disable (not delete) installs everywhere — data is preserved
+    from sqlalchemy import update as sa_update
+    from truss_kernel.models.plugin import PluginInstall
+    await db.execute(
+        sa_update(PluginInstall)
+        .where(PluginInstall.plugin_id == plugin_id)
+        .values(enabled=False)
+    )
+    await bus.emit(
+        db, tenant_id=auth.tenant_id, event_type="plugin.unpublished",
+        payload={"plugin_id": plugin_id}, actor_id=auth.user_id, plugin_id=plugin_id,
+    )
+    await db.commit()
+    return {"ok": True, "plugin_id": plugin_id}
 
 
 @router.post("/validate")

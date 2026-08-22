@@ -4669,10 +4669,23 @@ function DeveloperView() {
   const [manifestText, setManifestText] = useState("");
   const [validation, setValidation] = useState<{ ok: boolean; errors?: string[]; plugin_id?: string; version?: string; objects?: number; tools?: number } | null>(null);
   const [validating, setValidating] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [publishResult, setPublishResult] = useState<{ ok: boolean; plugin_id?: string; version?: string; updated?: boolean; error?: string } | null>(null);
+  const [published, setPublished] = useState<{ id: string; name: string; version: string; description: string; objects: number; tools: number }[]>([]);
+
+  const loadPublished = useCallback(async () => {
+    try {
+      const res = await api<{ items: { id: string; name: string; version: string; description: string; objects: number; tools: number }[] }>("/api/marketplace/published");
+      setPublished(res.items);
+    } catch {
+      setPublished([]);
+    }
+  }, []);
 
   useEffect(() => {
     api<string>("/api/dev/reference", { raw: true }).then(setReference).catch(() => setReference(""));
-  }, []);
+    loadPublished();
+  }, [loadPublished]);
 
   async function validateManifest() {
     setValidating(true);
@@ -4688,6 +4701,41 @@ function DeveloperView() {
       setValidation({ ok: false, errors: [err instanceof SyntaxError ? "Invalid JSON: " + err.message : "Request failed"] });
     } finally {
       setValidating(false);
+    }
+  }
+
+  async function publishManifest() {
+    setPublishing(true);
+    setPublishResult(null);
+    try {
+      const parsed = JSON.parse(manifestText);
+      const res = await api<{ ok: boolean; plugin_id: string; version: string; updated: boolean }>(
+        "/api/marketplace/publish",
+        { method: "POST", body: { manifest: parsed, install: true } }
+      );
+      setPublishResult({ ok: true, plugin_id: res.plugin_id, version: res.version, updated: res.updated });
+      toast(res.updated ? `Updated ${res.plugin_id} to v${res.version}` : `Published ${res.plugin_id} v${res.version}`, "success");
+      setManifestText("");
+      await loadPublished();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      const msg = typeof d === "string" ? d : Array.isArray((d as { errors?: string[] })?.errors)
+        ? ((d as { errors: string[] }).errors).join("; ")
+        : "Publish failed";
+      setPublishResult({ ok: false, error: msg });
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  async function unpublish(id: string) {
+    try {
+      await api(`/api/marketplace/publish/${id}`, { method: "DELETE" });
+      toast(`Unpublished ${id} (installs disabled, data preserved)`, "success");
+      await loadPublished();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Unpublish failed", "error");
     }
   }
 
@@ -4719,23 +4767,32 @@ const stats = await truss.insights.query({ object: "deal", metric: "sum", field:
           </div>
         </div>
 
-        {/* manifest validator */}
+        {/* manifest validator + publisher */}
         <div className="rounded-xl border border-border bg-card p-4">
-          <h2 className="text-sm font-semibold">Plugin manifest validator</h2>
-          <p className="mt-1 text-xs text-muted">Paste a plugin.json and dry-run it against the Plugin SDK (no install).</p>
+          <h2 className="text-sm font-semibold">Plugin manifest validator &amp; publisher</h2>
+          <p className="mt-1 text-xs text-muted">Paste a plugin.json — dry-run it against the Plugin SDK, or publish it to this instance&apos;s marketplace. Re-publish with a higher version to update.</p>
           <textarea
             className="mt-3 h-40 w-full rounded-lg border border-border bg-background p-3 font-mono text-[11px] outline-none transition focus:border-accent"
             placeholder='{"id": "my-plugin", "name": "My Plugin", "version": "0.1.0", ...}'
             value={manifestText}
             onChange={(e) => setManifestText(e.target.value)}
           />
-          <button
-            disabled={validating || !manifestText.trim()}
-            onClick={validateManifest}
-            className="mt-2 rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50"
-          >
-            {validating ? "Validating…" : "Validate"}
-          </button>
+          <div className="mt-2 flex gap-2">
+            <button
+              disabled={validating || !manifestText.trim()}
+              onClick={validateManifest}
+              className="rounded-lg border border-border px-4 py-1.5 text-sm font-semibold text-foreground transition hover:bg-card-2 disabled:opacity-50"
+            >
+              {validating ? "Validating…" : "Validate"}
+            </button>
+            <button
+              disabled={publishing || !manifestText.trim()}
+              onClick={publishManifest}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50"
+            >
+              {publishing ? "Publishing…" : "Publish"}
+            </button>
+          </div>
           {validation && (
             <div className="mt-3">
               {validation.ok ? (
@@ -4750,6 +4807,43 @@ const stats = await truss.insights.query({ object: "deal", metric: "sum", field:
                   </ul>
                 </div>
               )}
+            </div>
+          )}
+          {publishResult && (
+            <div className="mt-3">
+              {publishResult.ok ? (
+                <div className="rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-xs text-success">
+                  ✓ {publishResult.updated ? "Updated" : "Published"} {publishResult.plugin_id} v{publishResult.version} — installed into this workspace.
+                </div>
+              ) : (
+                <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+                  {publishResult.error}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* published plugins on this instance */}
+      <div className="rounded-xl border border-border bg-card p-4">
+        <h2 className="text-sm font-semibold">Published plugins</h2>
+        <p className="mt-1 text-xs text-muted">Community plugins published to this instance. Unpublishing disables installs but preserves data.</p>
+        <div className="mt-3 space-y-2">
+          {published.map((p) => (
+            <div key={p.id} className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">{p.name} <span className="font-mono text-[11px] text-muted">v{p.version}</span></div>
+                <div className="truncate text-xs text-muted">{p.id} · {p.objects} object(s) · {p.tools} tool(s)</div>
+              </div>
+              <button onClick={() => unpublish(p.id)} className="ml-3 shrink-0 text-xs text-muted transition hover:text-danger">
+                unpublish
+              </button>
+            </div>
+          ))}
+          {published.length === 0 && (
+            <div className="rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted">
+              Nothing published yet. Paste a manifest above and hit Publish.
             </div>
           )}
         </div>
