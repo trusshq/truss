@@ -42,12 +42,14 @@ import {
 } from "lucide-react";
 import {
   api,
+  API_BASE,
   getToken,
   setToken,
   type AgentInfo,
   type AgentRunResult,
   type AgentTaskInfo,
   type AiKeyInfo,
+  type ApiKeyInfo,
   type HistoryEntry,
   type TrashItem,
   type ChatResult,
@@ -1311,6 +1313,43 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showTrash, object?.slug]);
 
+  async function exportCsv() {
+    if (!object) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/records/${object.slug}/export.csv`, {
+        headers: { Authorization: `Bearer ${getToken()}` },
+      });
+      if (!res.ok) throw new Error("export failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${object.slug}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("CSV exported", "success");
+    } catch {
+      toast("Export failed", "error");
+    }
+  }
+
+  async function importCsv(file: File | undefined) {
+    if (!file || !object) return;
+    try {
+      const text = await file.text();
+      const res = await api<{ created: number; skipped: number }>(`/api/records/${object.slug}/import`, {
+        method: "POST",
+        body: { csv_text: text, skip_errors: true },
+      });
+      toast(`Imported ${res.created} record(s)${res.skipped ? `, ${res.skipped} skipped` : ""}`, res.skipped ? "info" : "success");
+      await load();
+      await onChanged();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Import failed", "error");
+    }
+  }
+
   const input =
     "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none transition focus:border-accent";
 
@@ -1326,6 +1365,16 @@ function ObjectView({ object, onChanged }: { object: ObjectDef | null; onChanged
           </p>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => exportCsv()}
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted transition hover:border-border-strong hover:text-foreground"
+          >
+            ⬇ Export CSV
+          </button>
+          <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted transition hover:border-border-strong hover:text-foreground">
+            ⬆ Import CSV
+            <input type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => importCsv(e.target.files?.[0])} />
+          </label>
           <button
             onClick={() => setShowTrash((v) => !v)}
             className={`flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm transition hover:border-border-strong ${showTrash ? "text-foreground" : "text-muted"}`}
@@ -1907,6 +1956,7 @@ function AiView({ onChanged }: { onChanged: () => Promise<void> }) {
     "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent";
 
   return (
+    <div className="space-y-6">
     <div className="grid gap-6 lg:grid-cols-2">
       {/* Keys manager */}
       <div>
@@ -2049,6 +2099,131 @@ function AiView({ onChanged }: { onChanged: () => Promise<void> }) {
             </button>
           </form>
         </div>
+      </div>
+    </div>
+
+    <ApiAccessPanel />
+    </div>
+  );
+}
+
+/* ---------------- API Access (programmatic keys) ---------------- */
+
+function ApiAccessPanel() {
+  const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
+  const [name, setName] = useState("");
+  const [scopes, setScopes] = useState<string[]>(["records:read", "records:write", "objects:read"]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [newKey, setNewKey] = useState("");
+
+  const ALL_SCOPES = ["records:read", "records:write", "objects:read", "agents:read"];
+
+  const load = useCallback(async () => {
+    setKeys(await api<ApiKeyInfo[]>("/api/keys"));
+  }, []);
+
+  useEffect(() => {
+    load().catch(() => {});
+  }, [load]);
+
+  async function create(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api<ApiKeyInfo>("/api/keys", { method: "POST", body: { name, scopes } });
+      setNewKey(res.key || "");
+      setName("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      setError(typeof d === "string" ? d : JSON.stringify(d));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke(id: string) {
+    await api(`/api/keys/${id}`, { method: "DELETE" });
+    await load();
+  }
+
+  const inputCls =
+    "w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm outline-none focus:border-accent";
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-bold">🔌 API Access</h1>
+        <button
+          onClick={() => { setShowAdd((v) => !v); setNewKey(""); }}
+          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
+        >
+          {showAdd ? "Close" : "+ New key"}
+        </button>
+      </div>
+      <p className="mt-1 text-sm text-muted">
+        Programmatic access to your workspace. Keys act as you but are capped by scopes.
+        The full key is shown once at creation — store it safely.
+      </p>
+
+      {newKey && (
+        <div className="mt-3 rounded-xl border border-success/40 bg-success/10 p-3">
+          <div className="text-xs font-semibold text-success">Key created — copy it now, it won&apos;t be shown again:</div>
+          <code className="mt-1 block break-all rounded bg-background px-2 py-1 font-mono text-xs">{newKey}</code>
+        </div>
+      )}
+
+      {showAdd && (
+        <form onSubmit={create} className="mt-3 space-y-3 rounded-xl border border-border bg-card p-4">
+          <input className={inputCls} placeholder="Key name (e.g. ci-pipeline)" value={name}
+            onChange={(e) => setName(e.target.value)} required />
+          <div>
+            <div className="mb-1 text-xs text-muted">Scopes</div>
+            <div className="flex flex-wrap gap-2">
+              {ALL_SCOPES.map((sc) => (
+                <label key={sc} className="flex items-center gap-1.5 rounded-lg border border-border px-2 py-1 text-xs">
+                  <input type="checkbox" checked={scopes.includes(sc)}
+                    onChange={(e) => setScopes(e.target.checked ? [...scopes, sc] : scopes.filter((x) => x !== sc))} />
+                  {sc}
+                </label>
+              ))}
+            </div>
+          </div>
+          {error && <div className="text-xs text-danger">{error}</div>}
+          <button disabled={busy || !name} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+            {busy ? "…" : "Create key"}
+          </button>
+        </form>
+      )}
+
+      <div className="mt-3 space-y-2">
+        {keys.map((k) => (
+          <div key={k.id} className="flex items-center justify-between rounded-lg border border-border bg-card px-4 py-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                {k.name}
+                {k.revoked_at && <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[10px] text-danger">revoked</span>}
+              </div>
+              <div className="truncate font-mono text-xs text-muted">{k.key_prefix}</div>
+              <div className="mt-0.5 flex flex-wrap gap-1">
+                {k.scopes.map((sc) => (
+                  <span key={sc} className="rounded-full bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">{sc}</span>
+                ))}
+              </div>
+            </div>
+            {!k.revoked_at && (
+              <button onClick={() => revoke(k.id)} className="ml-3 text-xs text-muted hover:text-danger">revoke</button>
+            )}
+          </div>
+        ))}
+        {keys.length === 0 && !showAdd && (
+          <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+            No API keys yet. Create one to access Truss from scripts and CI.
+          </div>
+        )}
       </div>
     </div>
   );

@@ -34,6 +34,7 @@ SUITES = [
     "workspace_smoke_test.py",
     "agent_smoke_test.py",
     "safety_smoke_test.py",
+    "a4_smoke_test.py",
 ]
 
 

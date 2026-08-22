@@ -274,6 +274,17 @@ export interface HistoryEntry {
   created_at: string | null;
 }
 
+export interface ApiKeyInfo {
+  id: string;
+  name: string;
+  key_prefix: string;
+  scopes: string[];
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_at: string | null;
+  key?: string; // plaintext, only on creation
+}
+
 export interface AgentInfo {
   id: string;
   name: string;

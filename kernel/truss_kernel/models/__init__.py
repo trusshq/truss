@@ -1,5 +1,6 @@
 from truss_kernel.models.agent import Agent, AgentStatus, AgentTask, TaskStatus
 from truss_kernel.models.ai import AiKey
+from truss_kernel.models.apikey import ApiKey
 from truss_kernel.models.automation import AutomationRun
 from truss_kernel.models.base import Base
 from truss_kernel.models.connector import Connector, WebhookDelivery
@@ -26,6 +27,7 @@ __all__ = [
     "FieldType",
     "Record",
     "RecordHistory",
+    "ApiKey",
     "PluginInstall",
     "EventLog",
 ]
