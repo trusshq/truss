@@ -18,6 +18,12 @@ jobs:
       TRUSS_JWT_SECRET: ci-jwt-secret-not-for-prod
       TRUSS_AI_VAULT_SECRET: ci-vault-secret-not-for-prod
       TRUSS_DEBUG: "false"
+      # connector test: point the external-postgres adapter at the CI service
+      TRUSS_TEST_PG_HOST: 127.0.0.1
+      TRUSS_TEST_PG_PORT: "5432"
+      TRUSS_TEST_PG_DB: truss
+      TRUSS_TEST_PG_USER: truss
+      TRUSS_TEST_PG_PASSWORD: "***"
     services:
       postgres:
         image: postgres:16-alpine
@@ -40,7 +46,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: uv sync
+        # --no-install-project: the local package layout (src/kernel) isn't
+        # installable; we run the source tree directly. Same fix as Dockerfile.
+        run: uv sync --no-install-project
 
       - name: Start kernel
         run: |
