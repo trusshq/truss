@@ -1,40 +1,55 @@
-# Truss — self-hosted stack (kernel + Postgres + Redis)
-# Frontend is deployed separately (Vercel) or run with `npm run dev`.
+# Truss — one-command self-hosted stack
+#
+#   cp .env.example .env   (then change the secrets!)
+#   docker compose up -d --build
+#
+# UI:      http://localhost:3000   (proxies /api/* to the kernel)
+# API:     http://localhost:8000   (also published directly)
+# Postgres: localhost:5432 (truss/truss unless overridden)
+
 services:
   db:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: truss
-      POSTGRES_PASSWORD: "truss"
-      POSTGRES_DB: truss
+      POSTGRES_USER: ${POSTGRES_USER:-truss}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-truss}
+      POSTGRES_DB: ${POSTGRES_DB:-truss}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - truss_pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U truss"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-truss}"]
       interval: 5s
       timeout: 3s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
+      retries: 12
 
   kernel:
     build: ./kernel
+    restart: unless-stopped
     environment:
-      TRUSS_DATABASE_URL: postgresql+asyncpg://truss:truss@db:5432/truss
-      TRUSS_JWT_SECRET: "change-me-in-production"
-      TRUSS_CORS_ORIGINS: http://localhost:3000
+      TRUSS_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-truss}:${POSTGRES_PASSWORD:-truss}@db:5432/${POSTGRES_DB:-truss}
+      TRUSS_JWT_SECRET: ${TRUSS_JWT_SECRET:-change-me-in-production}
+      TRUSS_AI_VAULT_SECRET: ${TRUSS_AI_VAULT_SECRET:-change-me-in-production}
+      TRUSS_CORS_ORIGINS: ${TRUSS_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      TRUSS_DEBUG: ${TRUSS_DEBUG:-false}
     ports:
-      - "8000:8000"
+      - "${KERNEL_PORT:-8000}:8000"
     depends_on:
       db:
         condition: service_healthy
     volumes:
-      - ./plugins:/app/plugins:ro
+      - ./plugins:/app/plugins
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      kernel:
+        condition: service_healthy
 
 volumes:
   truss_pg:

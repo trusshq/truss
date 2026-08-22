@@ -1,10 +1,11 @@
 """Phase 2 smoke test: automation engine fires declared rules off the event bus."""
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:8000"
+BASE = os.environ.get("TRUSS_TEST_BASE", "http://127.0.0.1:8000")
 TOKEN = None
 PASS, FAIL = 0, 0
 

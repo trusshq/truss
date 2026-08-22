@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  kernel:
+    name: Kernel — smoke suites (181 checks)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kernel
+    env:
+      TRUSS_DATABASE_URL: postgresql+asyncpg://truss:truss@127.0.0.1:5432/truss
+      TRUSS_JWT_SECRET: ci-jwt-secret-not-for-prod
+      TRUSS_AI_VAULT_SECRET: ci-vault-secret-not-for-prod
+      TRUSS_DEBUG: "false"
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: truss
+          POSTGRES_PASSWORD: "***"
+          POSTGRES_DB: truss
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U truss"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Start kernel
+        run: |
+          nohup uv run uvicorn truss_kernel.main:app --host 127.0.0.1 --port 8000 > kernel.log 2>&1 &
+          echo "kernel starting (pid $!)"
+
+      - name: Run all smoke suites
+        run: uv run python run_all_tests.py
+
+      - name: Kernel logs (on failure)
+        if: failure()
+        run: tail -n 120 kernel.log
+
+  frontend:
+    name: Frontend — production build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: Docker — compose config valid
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose file
+        run: docker compose config --quiet

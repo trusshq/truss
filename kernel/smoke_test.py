@@ -1,10 +1,11 @@
 """End-to-end smoke test against the running Truss kernel (real HTTP)."""
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:8000"
+BASE = os.environ.get("TRUSS_TEST_BASE", "http://127.0.0.1:8000")
 TOKEN = None
 PASS, FAIL = 0, 0
 

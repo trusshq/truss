@@ -1,0 +1,27 @@
+# Truss frontend — self-hosted standalone build
+# Browser calls same-origin /api/* → Next rewrite → kernel service.
+
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+# Same-origin API (browser) + kernel service URL (server-side rewrite)
+ENV NEXT_PUBLIC_TRUSS_API=""
+ENV TRUSS_KERNEL_URL=http://kernel:8000
+RUN npm run build
+
+FROM node:20-alpine AS run
+WORKDIR /app
+ENV NODE_ENV=production
+ENV HOSTNAME=0.0.0.0
+ENV PORT=3000
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY --from=build /app/public ./public
+EXPOSE 3000
+CMD ["node", "server.js"]

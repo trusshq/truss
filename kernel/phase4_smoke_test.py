@@ -1,11 +1,12 @@
 """Phase 4 smoke test: new first-party apps + regression on the bug fixes."""
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = "http://127.0.0.1:8000"
+BASE = os.environ.get("TRUSS_TEST_BASE", "http://127.0.0.1:8000")
 TOKEN = None
 PASS, FAIL = 0, 0
 

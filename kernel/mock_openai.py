@@ -5,6 +5,7 @@ Simulates a model that:
 2. Second call (after tool result): returns a final text answer
 """
 import json
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 CALL_COUNT = {"n": 0}
@@ -76,6 +77,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = HTTPServer(("127.0.0.1", 9999), Handler)
+    server = HTTPServer((os.environ.get("MOCK_BIND", "127.0.0.1"), 9999), Handler)
     print("mock OpenAI server on :9999", flush=True)
     server.serve_forever()

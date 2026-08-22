@@ -1,0 +1,12 @@
+.git
+__pycache__
+*.pyc
+.env
+.venv
+plugins
+plugins_external
+*_smoke_test.py
+run_all_tests.py
+mock_openai.py
+mock_webhook.py
+README.md

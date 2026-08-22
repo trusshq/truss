@@ -1,12 +1,17 @@
 """Phase 3 smoke test: connectors (webhook forwarding + external postgres)."""
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 
-BASE = "http://127.0.0.1:8000"
-WEBHOOK_RX = "http://127.0.0.1:9998"
+BASE = os.environ.get("TRUSS_TEST_BASE", "http://127.0.0.1:8000")
+# Where the KERNEL delivers webhooks (from the kernel's network perspective —
+# use host.docker.internal when the kernel runs in a container).
+WEBHOOK_RX = os.environ.get("TRUSS_TEST_WEBHOOK_RX", "http://127.0.0.1:9998")
+# Where the TEST CLIENT reads back what the receiver got (from the host).
+WEBHOOK_RX_CLIENT = os.environ.get("TRUSS_TEST_WEBHOOK_RX_CLIENT", WEBHOOK_RX)
 TOKEN = None
 PASS, FAIL = 0, 0
 
@@ -82,7 +87,7 @@ check("lead created (fires record.created)", s == 201, f"{s} {lead}")
 
 # give the after_commit delivery a moment
 time.sleep(2)
-s, received = call("GET", "/received", auth=False, base=WEBHOOK_RX)
+s, received = call("GET", "/received", auth=False, base=WEBHOOK_RX_CLIENT)
 received = received if isinstance(received, list) else []
 match = [r for r in received if "Webhook Test Lead" in r.get("body", "")]
 check("webhook receiver got the event", len(match) >= 1, f"received {len(received)} total")
@@ -111,10 +116,19 @@ upd_dels = [d for d in dels2 if d.get("event_type") == "record.updated"] if isin
 check("record.updated forwarded", len(upd_dels) >= 1, str([d.get('event_type') for d in dels2]))
 
 print("== 7. external postgres connector (self -> read-only) ==")
+# Point at a reachable Postgres. Defaults match local dev; when the kernel runs
+# in Docker, override to the compose db service (host.docker.internal or db).
+pg_cfg = {
+    "host": os.environ.get("TRUSS_TEST_PG_HOST", "127.0.0.1"),
+    "port": int(os.environ.get("TRUSS_TEST_PG_PORT", "5432")),
+    "database": os.environ.get("TRUSS_TEST_PG_DB", "truss"),
+    "user": os.environ.get("TRUSS_TEST_PG_USER", "postgres"),
+    "password": os.environ.get("TRUSS_TEST_PG_PASSWORD", "admin"),
+}
 s, pg = call("POST", "/api/connectors", {
     "name": "external-pg-test",
     "type": "postgres",
-    "config": {"host": "127.0.0.1", "port": 5432, "database": "truss", "user": "postgres", "password": "admin"},
+    "config": pg_cfg,
     "description": "Point at our own DB to prove the adapter works",
 })
 if s == 409:

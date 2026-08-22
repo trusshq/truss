@@ -53,8 +53,28 @@ Interactive API docs: http://127.0.0.1:8000/docs
 
 ## Self-hosted (Docker)
 
+One command brings up the full stack — Postgres, kernel, and frontend:
+
 ```bash
-docker compose up -d    # Postgres + Redis + kernel on :8000
+cp .env.example .env     # then set strong secrets!
+docker compose up -d --build
+```
+
+| Service | URL |
+|---|---|
+| UI | http://localhost:3000 (proxies `/api/*` to the kernel) |
+| API + docs | http://localhost:8000 · http://localhost:8000/docs |
+| Postgres | localhost:5432 |
+
+Create a workspace at http://localhost:3000 and you're running. All ports, credentials, and secrets are configurable via `.env` (see `.env.example`).
+
+## Tests & CI
+
+Every push runs the full suite in GitHub Actions (`.github/workflows/ci.yml`): kernel smoke suites on a real Postgres + frontend production build + compose validation.
+
+```bash
+cd kernel
+uv run python run_all_tests.py   # 181 checks across 7 suites
 ```
 
 ## Repository layout
@@ -86,13 +106,18 @@ A plugin is a folder with a `plugin.json` manifest — objects, AI tools, automa
 
 ## Roadmap
 
-- [x] Phase 0 — kernel: tenancy, metadata layer, plugin runtime, event seam, CRM plugin, frontend shell
-- [ ] BYOK AI runtime: key vault + OpenAI-compatible client + tool-calling agents
-- [ ] Automation engine: trigger → condition → action interpreter
-- [ ] Connectors: external Postgres/Neon, S3/R2, SMTP, webhook event forwarding
-- [ ] More first-party apps: invoicing, tasks, helpdesk-lite
-- [ ] Plugin SDK + CLI for external developers
-- [ ] Marketplace (templates + plugins, rev-share)
+- [x] Phase 0 — kernel: tenancy, metadata layer, plugin runtime, event seam
+- [x] Phase 1 — BYOK AI: encrypted key vault, OpenAI-compatible client, tool-calling agent loop
+- [x] Phase 2 — Automations: declarative trigger → condition → action engine
+- [x] Phase 3 — Connectors: webhook forwarding, external Postgres/Neon, outbox + retry
+- [x] Phase 4 — App suite: CRM, Invoices, Tasks, Helpdesk as pure plugins
+- [x] Phase 5 — Marketplace: community plugin catalog + one-click workspace templates
+- [x] Workspace & access control: namespace, profiles, invites, owner/admin/member/viewer RBAC
+- [x] Self-hosting: Docker Compose full stack + CI pipeline
+- [ ] Hosted tier: managed Truss, billing, plugin publishing pipeline
+- [ ] Reports & dashboards, audit log, notifications
+- [ ] AI depth: scheduled agents, natural-language schema builder, RAG over workspace data
+- [ ] Plugin SDK + CLI, sandboxing, SSO/SAML, mobile apps
 
 ## License
 

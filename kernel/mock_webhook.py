@@ -1,5 +1,6 @@
 """Mock webhook receiver: records every POST for the Phase 3 test."""
 import json
+import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 RECEIVED = []
@@ -36,6 +37,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = HTTPServer(("127.0.0.1", 9998), Handler)
+    server = HTTPServer((os.environ.get("MOCK_BIND", "127.0.0.1"), 9998), Handler)
     print("mock webhook receiver on :9998", flush=True)
     server.serve_forever()

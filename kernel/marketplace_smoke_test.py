@@ -1,8 +1,9 @@
 """Phase 5 smoke test: Marketplace — community plugins + templates."""
 import json
+import os
 import urllib.request
 
-BASE = "http://127.0.0.1:8000"
+BASE = os.environ.get("TRUSS_TEST_BASE", "http://127.0.0.1:8000")
 PW = "pass" + "word123"  # demo credential
 passed = failed = 0
 

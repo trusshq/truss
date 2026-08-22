@@ -1,11 +1,12 @@
 """Phase 1 smoke test: BYOK AI vault + agent loop against a mock provider."""
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = "http://127.0.0.1:8000"
+BASE = os.environ.get("TRUSS_TEST_BASE", "http://127.0.0.1:8000")
 TOKEN = None
 PASS, FAIL = 0, 0
 
@@ -48,7 +49,7 @@ print("== 1. create AI key (BYOK) ==")
 s, b = call("POST", "/api/ai/keys", {
     "name": "mock-provider",
     "provider": "openai-compatible",
-    "base_url": "http://127.0.0.1:9999/v1",
+    "base_url": os.environ.get("TRUSS_TEST_AI_BASE", "http://127.0.0.1:9999/v1"),
     "model": "mock-model",
     "api_key": "test-key-123",
     "is_default": True,

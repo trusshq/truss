@@ -1,4 +1,11 @@
-/* Truss kernel API client (browser). Token kept in localStorage. */
+/* Truss kernel API client (browser). Token kept in localStorage.
+ *
+ * API base resolution:
+ *  - NEXT_PUBLIC_TRUSS_API unset  -> http://127.0.0.1:8000 (Vercel demo / local dev:
+ *    the browser talks to a kernel you run on your own machine)
+ *  - NEXT_PUBLIC_TRUSS_API=""     -> same-origin /api/* (Docker self-host: Next
+ *    rewrites /api/* to the kernel service, so no CORS and no hardcoded host)
+ */
 
 export const API_BASE = process.env.NEXT_PUBLIC_TRUSS_API ?? "http://127.0.0.1:8000";
 
