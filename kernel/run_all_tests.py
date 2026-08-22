@@ -48,10 +48,35 @@ def wait_for_kernel(timeout: int = 90) -> bool:
     return False
 
 
+def _check_db(url: str) -> str:
+    """Try a raw TCP connect to the Postgres host:port. Returns a diagnostic."""
+    import re
+    m = re.search(r"@([^:/]+):(\d+)/", url)
+    if not m:
+        return f"could not parse host:port from {url!r}"
+    host, port = m.group(1), int(m.group(2))
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=5):
+            return f"TCP connect to {host}:{port} OK"
+    except Exception as e:  # noqa: BLE001
+        return f"TCP connect to {host}:{port} FAILED: {e!r}"
+
+
 def start_kernel_in_thread(port: int) -> None:
-    """Run uvicorn in a daemon thread. Any startup error is captured and
+    """Run uvicorn in a daemon thread. Startup logs are teed to kernel.log so
+    the on-failure CI step can surface them; any startup error is captured and
     re-raised in the main thread so CI sees it immediately."""
+    import logging
     import uvicorn
+
+    # Tee uvicorn + app logs into kernel.log (the CI failure step tails this).
+    fh = logging.FileHandler(os.path.join(HERE, "kernel.log"), mode="w", encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "truss_kernel", ""):
+        lg = logging.getLogger(name)
+        lg.addHandler(fh)
+        lg.setLevel(logging.INFO)
 
     errors: list[BaseException] = []
 
@@ -82,6 +107,8 @@ def main() -> int:
 
     # Optionally run the kernel in-process (CI mode).
     if os.environ.get("TRUSS_TEST_SPAWN_KERNEL") == "1":
+        db_url = os.environ.get("TRUSS_DATABASE_URL", "")
+        print(f"DB pre-check: {_check_db(db_url)}", flush=True)
         port = int(BASE.rsplit(":", 1)[-1].split("/", 1)[0])
         start_kernel_in_thread(port)
 
@@ -97,6 +124,12 @@ def main() -> int:
         print(f"Waiting for kernel at {BASE} …", flush=True)
         if not wait_for_kernel():
             print("FATAL: kernel did not become healthy in time", flush=True)
+            log_path = os.path.join(HERE, "kernel.log")
+            if os.path.exists(log_path):
+                print("--- kernel.log (last 60 lines) ---", flush=True)
+                with open(log_path, encoding="utf-8", errors="replace") as f:
+                    for line in f.readlines()[-60:]:
+                        print(line.rstrip(), flush=True)
             return 2
         print("Kernel healthy. Running suites…\n", flush=True)
 
