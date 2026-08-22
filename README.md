@@ -70,11 +70,11 @@ Create a workspace at http://localhost:3000 and you're running. All ports, crede
 
 ## Tests & CI
 
-Every push runs the full suite in GitHub Actions (`.github/workflows/ci.yml`): kernel smoke suites on a real Postgres + frontend production build + compose validation.
+Every push runs the full suite in GitHub Actions (`.github/workflows/ci.yml`): kernel smoke suites on a real Postgres + frontend production build + compose validation + Docker image builds (kernel image is booted against Postgres and must serve `/api/health`).
 
 ```bash
 cd kernel
-uv run python run_all_tests.py   # 181 checks across 7 suites
+uv run python run_all_tests.py   # 471 checks across 16 suites
 ```
 
 ## Repository layout
@@ -113,11 +113,17 @@ A plugin is a folder with a `plugin.json` manifest — objects, AI tools, automa
 - [x] Phase 4 — App suite: CRM, Invoices, Tasks, Helpdesk as pure plugins
 - [x] Phase 5 — Marketplace: community plugin catalog + one-click workspace templates
 - [x] Workspace & access control: namespace, profiles, invites, owner/admin/member/viewer RBAC
-- [x] Self-hosting: Docker Compose full stack + CI pipeline
+- [x] Phase A — AI employees: hire/fire agents, budgets, permission roles, safety rails (history, trash, validation), adoption (CSV, activity feed, API keys, webhooks-out)
+- [x] Phase B — Org: org chart, goals, approvals, notifications
+- [x] Phase C — Autonomous orchestration: scheduled agents, task queues, review inbox, autopilot
+- [x] Phase D — Intelligence: analytics engine, scorecards, timeline, insight queries
+- [x] Phase E — Developer platform: typed TS SDK, manifest validation, API reference, dev portal
+- [x] Phase F — Chat control surface: one chatbox to run the whole workspace (role-gated kernel tools), 10-section sidebar, deep theming (font, scale, motion, accent, radius, density)
+- [x] Phase G — CRM first-party app: activities, pipeline kanban, App Home dashboard surfaces
+- [x] Self-hosting: Docker Compose full stack + CI pipeline (images built & smoke-tested in CI)
 - [ ] Hosted tier: managed Truss, billing, plugin publishing pipeline
-- [ ] Reports & dashboards, audit log, notifications
-- [ ] AI depth: scheduled agents, natural-language schema builder, RAG over workspace data
-- [ ] Plugin SDK + CLI, sandboxing, SSO/SAML, mobile apps
+- [ ] AI depth: natural-language schema builder, RAG over workspace data
+- [ ] Sandboxing, SSO/SAML, mobile apps
 
 ## License
 

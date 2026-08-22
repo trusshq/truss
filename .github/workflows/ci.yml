@@ -8,7 +8,7 @@ on:
 
 jobs:
   kernel:
-    name: Kernel — smoke suites (181 checks)
+    name: Kernel — smoke suites (471 checks)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -142,3 +142,50 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate compose file
         run: docker compose config --quiet
+
+  docker-build:
+    name: Docker — build kernel + frontend images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build kernel image
+        run: docker build -t truss-kernel:ci ./kernel
+
+      - name: Build frontend image
+        run: docker build -t truss-frontend:ci ./frontend
+
+      - name: Smoke — kernel image boots against Postgres and serves /api/health
+        run: |
+          set -e
+          docker network create truss-ci
+          docker run -d --name truss-pg --network truss-ci \
+            -e POSTGRES_USER=truss -e POSTGRES_PASSWORD=ci-pg-pw-not-for-prod -e POSTGRES_DB=truss \
+            postgres:16-alpine
+          # wait for pg
+          for i in $(seq 1 30); do
+            docker exec truss-pg pg_isready -U truss >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker run -d --name truss-kernel-ci --network truss-ci \
+            -e TRUSS_DATABASE_URL=postgresql+asyncpg://truss:ci-pg-pw-not-for-prod@truss-pg:5432/truss \
+            -e TRUSS_JWT_SECRET=ci-jwt-secret-not-for-prod \
+            -e TRUSS_AI_VAULT_SECRET=ci-vault-secret-not-for-prod \
+            -p 8010:8000 truss-kernel:ci
+          healthy=0
+          for i in $(seq 1 45); do
+            if curl -sf http://127.0.0.1:8010/api/health >/dev/null 2>&1; then healthy=1; break; fi
+            if ! docker ps --filter name=truss-kernel-ci --filter status=running -q | grep -q .; then
+              echo "::error::kernel container exited early"
+              docker logs truss-kernel-ci 2>&1 | tail -40
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$healthy" != "1" ]; then
+            echo "::error::kernel image did not become healthy"
+            docker logs truss-kernel-ci 2>&1 | tail -40
+            exit 1
+          fi
+          echo "kernel image healthy — /api/health OK"
+          curl -s http://127.0.0.1:8010/api/health
