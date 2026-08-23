@@ -114,6 +114,7 @@ type View =
   | { kind: "connectors" }
   | { kind: "settings" }
   | { kind: "workspace" }
+  | { kind: "billing" }
   | { kind: "profile" };
 
 /* ---------------- Toast store (module-level — any view can toast) ---------------- */
@@ -434,9 +435,10 @@ function SidebarContent({
           label="Account"
           open={openSections.account}
           onToggle={() => toggleSection("account")}
-          active={["workspace", "profile", "settings"].includes(view.kind)}
+          active={["workspace", "profile", "settings", "billing"].includes(view.kind)}
         >
           <NavItem active={view.kind === "workspace"} onClick={() => go({ kind: "workspace" })} icon={<Boxes size={15} />} label="Workspace" badge={me.role} />
+          <NavItem active={view.kind === "billing"} onClick={() => go({ kind: "billing" })} icon={<Coins size={15} />} label="Billing" />
           <NavItem active={view.kind === "profile"} onClick={() => go({ kind: "profile" })} icon={<UserCircle size={15} />} label="Profile" />
           <NavItem active={view.kind === "settings"} onClick={() => go({ kind: "settings" })} icon={<Palette size={15} />} label="Appearance" />
         </NavSection>
@@ -728,6 +730,7 @@ export default function DashboardPage() {
             {view.kind === "connectors" && <ConnectorsView />}
             {view.kind === "settings" && <SettingsView />}
             {view.kind === "workspace" && <WorkspaceView me={me} onMeChanged={refresh} />}
+            {view.kind === "billing" && <BillingView isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5209,6 +5212,257 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase L: Billing ---------------- */
+
+interface PlanInfo {
+  id: string;
+  name: string;
+  price_cents: number;
+  limits: { members: number | null; records: number | null; agents: number | null };
+  description: string;
+}
+interface SubInfo {
+  plan: string;
+  plan_name: string;
+  status: string;
+  seats: number;
+  cancel_at_period_end: boolean;
+  current_period_end: string;
+  price_cents_per_seat: number;
+}
+interface UsageInfo {
+  plan: string;
+  usage: { members: number; records: number; agents: number };
+  limits: { members: number | null; records: number | null; agents: number | null };
+  headroom: { members: number | null; records: number | null; agents: number | null };
+}
+interface InvoiceInfo {
+  id: string;
+  number: string;
+  amount_cents: number;
+  currency: string;
+  status: string;
+  lines: { description?: string; qty?: number };
+  period_start: string;
+  period_end: string;
+  created_at: string;
+}
+
+function BillingView({ isAdmin }: { isAdmin: boolean }) {
+  const [plans, setPlans] = useState<PlanInfo[]>([]);
+  const [sub, setSub] = useState<SubInfo | null>(null);
+  const [usage, setUsage] = useState<UsageInfo | null>(null);
+  const [invoices, setInvoices] = useState<InvoiceInfo[]>([]);
+  const [seats, setSeats] = useState(1);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      const [p, s, u, inv] = await Promise.all([
+        api<{ items: PlanInfo[] }>("/api/billing/plans"),
+        api<SubInfo>("/api/billing/subscription"),
+        api<UsageInfo>("/api/billing/usage"),
+        api<{ items: InvoiceInfo[] }>("/api/billing/invoices"),
+      ]);
+      setPlans(p.items);
+      setSub(s);
+      setUsage(u);
+      setInvoices(inv.items);
+      setSeats(s.seats);
+    } catch {
+      /* keep last state */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function checkout(planId: string) {
+    setBusy(planId);
+    try {
+      const res = await api<{ plan: string; invoice: string; amount_cents: number }>(
+        "/api/billing/checkout",
+        { method: "POST", body: { plan: planId, seats } }
+      );
+      toast(`Switched to ${planId} — invoice ${res.invoice} ($${(res.amount_cents / 100).toFixed(2)})`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Checkout failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function cancelSub() {
+    setBusy("cancel");
+    try {
+      await api("/api/billing/cancel", { method: "POST" });
+      toast("Subscription will cancel at period end", "info");
+      await load();
+    } catch {
+      toast("Cancel failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const money = (cents: number) => `$${(cents / 100).toFixed(cents % 100 === 0 ? 0 : 2)}`;
+  const limitLabel = (n: number | null) => (n === null ? "Unlimited" : n.toLocaleString());
+
+  const usageRows: { key: keyof UsageInfo["usage"]; label: string }[] = [
+    { key: "members", label: "Members" },
+    { key: "records", label: "Records" },
+    { key: "agents", label: "AI employees" },
+  ];
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div>
+        <h1 className="text-xl font-bold">Billing</h1>
+        <p className="mt-0.5 text-xs text-muted">Plan, usage, and invoices. Self-hosted checkout is a mock payment flow.</p>
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-28 w-full rounded-xl" />)}</div>
+      ) : (
+        <>
+          {/* current subscription */}
+          {sub && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
+              <div>
+                <div className="text-sm font-semibold">
+                  {sub.plan_name} plan · {sub.seats} seat{sub.seats !== 1 ? "s" : ""}
+                  {sub.cancel_at_period_end && <span className="ml-2 rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger">cancels {new Date(sub.current_period_end).toLocaleDateString()}</span>}
+                </div>
+                <div className="mt-0.5 text-xs text-muted">
+                  {money(sub.price_cents_per_seat)}/seat/month · renews {new Date(sub.current_period_end).toLocaleDateString()}
+                </div>
+              </div>
+              {isAdmin && !sub.cancel_at_period_end && sub.plan !== "free" && (
+                <button
+                  onClick={cancelSub}
+                  disabled={busy === "cancel"}
+                  className="rounded-lg border border-border px-3 py-1.5 text-xs text-muted transition hover:text-danger disabled:opacity-50"
+                >
+                  {busy === "cancel" ? "Cancelling…" : "Cancel at period end"}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* usage vs limits */}
+          {usage && (
+            <div className="rounded-xl border border-border bg-card p-4">
+              <h2 className="text-sm font-semibold">Usage</h2>
+              <div className="mt-3 space-y-3">
+                {usageRows.map(({ key, label }) => {
+                  const used = usage.usage[key];
+                  const cap = usage.limits[key];
+                  const pct = cap === null ? 0 : Math.min(100, Math.round((used / Math.max(cap, 1)) * 100));
+                  return (
+                    <div key={key}>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted">{label}</span>
+                        <span className="font-mono">{used.toLocaleString()} / {limitLabel(cap)}</span>
+                      </div>
+                      <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-background">
+                        <div
+                          className={`h-full rounded-full transition-all ${pct >= 90 ? "bg-danger" : pct >= 70 ? "bg-warning" : "bg-accent"}`}
+                          style={{ width: cap === null ? "4%" : `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* plan picker */}
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold">Plans</h2>
+              {isAdmin && (
+                <label className="flex items-center gap-2 text-xs text-muted">
+                  Seats
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={seats}
+                    onChange={(e) => setSeats(Math.max(1, Number(e.target.value) || 1))}
+                    className="w-20 rounded-lg border border-border bg-background px-2 py-1 text-sm outline-none focus:border-accent"
+                  />
+                </label>
+              )}
+            </div>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              {plans.map((p) => {
+                const current = sub?.plan === p.id;
+                return (
+                  <div key={p.id} className={`rounded-xl border p-4 ${current ? "border-accent bg-accent-soft" : "border-border bg-background"}`}>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-sm font-semibold">{p.name}</span>
+                      <span className="text-sm font-bold">{p.price_cents === 0 ? "Free" : `${money(p.price_cents)}/seat/mo`}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted">{p.description}</p>
+                    <ul className="mt-2 space-y-1 text-[11px] text-muted">
+                      <li>👥 {limitLabel(p.limits.members)} members</li>
+                      <li>🗂 {limitLabel(p.limits.records)} records</li>
+                      <li>🤖 {limitLabel(p.limits.agents)} AI employees</li>
+                    </ul>
+                    {isAdmin && (
+                      <button
+                        onClick={() => checkout(p.id)}
+                        disabled={current || busy !== null}
+                        className={`mt-3 w-full rounded-lg px-3 py-1.5 text-xs font-semibold transition disabled:opacity-50 ${
+                          current ? "cursor-default border border-border text-muted" : "bg-accent text-on-accent hover:brightness-110"
+                        }`}
+                      >
+                        {current ? "Current plan" : busy === p.id ? "Switching…" : `Switch to ${p.name}`}
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* invoices */}
+          <div className="rounded-xl border border-border bg-card p-4">
+            <h2 className="text-sm font-semibold">Invoices</h2>
+            <div className="mt-3 space-y-2">
+              {invoices.map((inv) => (
+                <div key={inv.id} className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-xs">
+                  <div className="min-w-0">
+                    <span className="font-mono font-semibold">{inv.number}</span>
+                    <span className="ml-2 text-muted">{inv.lines.description}</span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <span className="text-muted">{new Date(inv.period_start).toLocaleDateString()} – {new Date(inv.period_end).toLocaleDateString()}</span>
+                    <span className="font-semibold">{money(inv.amount_cents)}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] ${inv.status === "paid" ? "bg-success/10 text-success" : "bg-warning/10 text-warning"}`}>{inv.status}</span>
+                  </div>
+                </div>
+              ))}
+              {invoices.length === 0 && (
+                <div className="rounded-lg border border-dashed border-border px-4 py-5 text-center text-xs text-muted">
+                  No invoices yet — they appear when you switch to a paid plan.
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -191,6 +191,9 @@ async def list_records(
 async def create_record(object_slug: str, body: RecordIn, auth: AuthContext = Depends(require_member), db: AsyncSession = Depends(get_db)):
     obj = await _get_object(db, auth.tenant_id, object_slug)
     ensure_scope(auth, "records:write")
+    # Phase L: plan limit on records
+    from truss_kernel.services import billing as billing_svc
+    await billing_svc.ensure_within_limits(db, auth.tenant_id, "records")
     try:
         rec = await svc.create_record(db, auth.tenant_id, auth.user_id, obj, body.data)
     except svc.ValidationError as e:

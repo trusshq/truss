@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # AI vault: Fernet key material for encrypting user-supplied API keys at rest
     ai_vault_secret: str = "dev-vault-secret-change-me-in-production"
 
+    # Billing: enforce plan limits at kernel chokepoints (self-hosted can disable)
+    billing_enforce: bool = True
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

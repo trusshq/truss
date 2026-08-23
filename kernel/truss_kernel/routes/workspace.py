@@ -283,6 +283,10 @@ async def create_invite(
     if auth.role == TenantRole.admin and body.role in (TenantRole.admin.value,):
         raise HTTPException(403, "Admins can only invite members or viewers.")
 
+    # Phase L: plan limit on members
+    from truss_kernel.services import billing as billing_svc
+    await billing_svc.ensure_within_limits(db, auth.tenant_id, "members")
+
     email = body.email.lower()
     # already a member?
     existing_user = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()

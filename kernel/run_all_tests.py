@@ -44,6 +44,7 @@ SUITES = [
     "aidepth_smoke_test.py",
     "publish_smoke_test.py",
     "audit_smoke_test.py",
+    "billing_smoke_test.py",
 ]
 
 
