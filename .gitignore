@@ -37,3 +37,6 @@ tmp/
 
 # external plugins dir — runtime materialization target for marketplace installs
 plugins/
+
+# Phase O: local file storage (runtime data, never commit)
+kernel/storage_files/
