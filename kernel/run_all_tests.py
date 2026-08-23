@@ -50,6 +50,7 @@ SUITES = [
     "files_smoke_test.py",
     "calendar_smoke_test.py",
     "kb_smoke_test.py",
+    "time_smoke_test.py",
 ]
 
 

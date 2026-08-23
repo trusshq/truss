@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Clock,
   Code2,
   Cog,
   Coins,
@@ -118,6 +119,7 @@ type View =
   | { kind: "files" }
   | { kind: "calendar" }
   | { kind: "kb" }
+  | { kind: "time" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -445,6 +447,14 @@ function SidebarContent({
           onClick={() => go({ kind: "kb" })}
           icon={<BookOpen size={15} />}
           label="Knowledge Base"
+        />
+
+        {/* Time Tracking — standalone */}
+        <NavItem
+          active={view.kind === "time"}
+          onClick={() => go({ kind: "time" })}
+          icon={<Clock size={15} />}
+          label="Time Tracking"
         />
 
         {/* Automations — automations, connectors, events */}
@@ -785,6 +795,7 @@ export default function DashboardPage() {
             {view.kind === "files" && <FilesView canEdit={me.role !== "viewer"} />}
             {view.kind === "calendar" && <CalendarView canEdit={me.role !== "viewer"} />}
             {view.kind === "kb" && <KBView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "time" && <TimeView canEdit={me.role !== "viewer"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5266,6 +5277,225 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase R: Time Tracking ---------------- */
+
+interface TimeEntry {
+  id: string;
+  description: string;
+  started_at: string;
+  stopped_at: string | null;
+  duration_minutes: number | null;
+  running: boolean;
+  object: string | null;
+  record_id: string | null;
+  user_id: string | null;
+  notes: string;
+  created_at: string;
+}
+interface TimeSummary {
+  total_minutes: number;
+  entries: number;
+  by_object: { label: string; minutes: number }[];
+  by_user: { label: string; minutes: number }[];
+}
+
+function fmtDuration(mins: number | null) {
+  if (mins == null) return "—";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+function TimeView({ canEdit }: { canEdit: boolean }) {
+  const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [summary, setSummary] = useState<TimeSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [timerDesc, setTimerDesc] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [e, s] = await Promise.all([
+        api<{ items: TimeEntry[] }>("/api/time"),
+        api<TimeSummary>("/api/time/summary"),
+      ]);
+      setEntries(e.items);
+      setSummary(s);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const runningEntry = entries.find((e) => e.running);
+
+  async function startTimer() {
+    setBusy("timer");
+    try {
+      await api("/api/time/timer/start", { method: "POST", body: { description: timerDesc.trim() } });
+      toast("Timer started", "success");
+      setTimerDesc("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Start failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function stopTimer(id: string) {
+    setBusy("timer");
+    try {
+      await api(`/api/time/${id}/timer/stop`, { method: "POST" });
+      toast("Timer stopped", "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Stop failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteEntry(e: TimeEntry) {
+    setBusy(e.id);
+    try {
+      await api(`/api/time/${e.id}`, { method: "DELETE" });
+      toast("Entry deleted", "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div>
+        <h1 className="text-xl font-bold">Time Tracking</h1>
+        <p className="mt-0.5 text-xs text-muted">Log work or run a live timer. Entries can link to any record.</p>
+      </div>
+
+      {/* timer / summary row */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">{runningEntry ? "Timer running" : "Start a timer"}</h2>
+          {runningEntry ? (
+            <div className="mt-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium">{runningEntry.description || "(no description)"}</div>
+                <div className="mt-0.5 text-xs text-muted">
+                  started {new Date(runningEntry.started_at).toLocaleTimeString()}
+                  {runningEntry.object && <span> · {runningEntry.object}</span>}
+                </div>
+              </div>
+              <button
+                onClick={() => stopTimer(runningEntry.id)}
+                disabled={busy === "timer"}
+                className="shrink-0 rounded-lg bg-danger px-4 py-1.5 text-sm font-semibold text-white transition hover:brightness-110 disabled:opacity-50"
+              >
+                {busy === "timer" ? "Stopping…" : "Stop"}
+              </button>
+            </div>
+          ) : canEdit ? (
+            <div className="mt-3 flex items-center gap-2">
+              <input
+                value={timerDesc}
+                onChange={(e) => setTimerDesc(e.target.value)}
+                placeholder="What are you working on?"
+                className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent"
+              />
+              <button
+                onClick={startTimer}
+                disabled={busy === "timer"}
+                className="shrink-0 rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50"
+              >
+                {busy === "timer" ? "Starting…" : "Start"}
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 text-xs text-muted">You need edit access to run a timer.</div>
+          )}
+        </div>
+
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Logged time</h2>
+          {summary ? (
+            <div className="mt-3">
+              <div className="text-2xl font-bold">{fmtDuration(summary.total_minutes)}</div>
+              <div className="mt-0.5 text-xs text-muted">{summary.entries} completed entr{summary.entries === 1 ? "y" : "ies"}</div>
+              {summary.by_object.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {summary.by_object.slice(0, 4).map((r) => (
+                    <div key={r.label} className="flex items-center justify-between text-xs">
+                      <span className="text-muted">{r.label}</span>
+                      <span className="font-mono">{fmtDuration(r.minutes)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="skeleton mt-3 h-16 w-full rounded-lg" />
+          )}
+        </div>
+      </div>
+
+      {/* entries list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {entries.map((e) => (
+            <div key={e.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${e.running ? "bg-success/10 text-success" : "bg-background text-muted"}`}>
+                  <Clock size={16} />
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">{e.description || "(no description)"}</div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    {new Date(e.started_at).toLocaleString()}
+                    {e.object && <span> · {e.object}{e.record_id ? ` #${e.record_id.slice(0, 8)}` : ""}</span>}
+                    {e.notes && <span> · {e.notes}</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-3">
+                <span className={`font-mono text-sm ${e.running ? "font-bold text-success" : "text-foreground"}`}>
+                  {e.running ? "● running" : fmtDuration(e.duration_minutes)}
+                </span>
+                {canEdit && !e.running && (
+                  <button
+                    onClick={() => deleteEntry(e)}
+                    disabled={busy === e.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          {entries.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No time logged yet. Start a timer or log an entry.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
