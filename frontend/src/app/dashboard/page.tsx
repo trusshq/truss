@@ -19,6 +19,7 @@ import {
   Command,
   Copy,
   Database,
+  Download,
   History,
   Home,
   Inbox,
@@ -408,7 +409,7 @@ function SidebarContent({
           {me.role !== "viewer" && (
             <NavItem active={view.kind === "connectors"} onClick={() => go({ kind: "connectors" })} icon={<Cable size={15} />} label="Connectors" />
           )}
-          <NavItem active={view.kind === "events"} onClick={() => go({ kind: "events" })} icon={<Zap size={15} />} label="Events" />
+          <NavItem active={view.kind === "events"} onClick={() => go({ kind: "events" })} icon={<Zap size={15} />} label="Audit Log" />
         </NavSection>
 
         {/* Developer — standalone */}
@@ -1022,7 +1023,7 @@ function CommandPalette({
       { label: "AI Employees", icon: <Users size={14} />, view: { kind: "agents" } },
       { label: "Automations", icon: <Cog size={14} />, view: { kind: "automations" } },
       { label: "Connectors", icon: <Cable size={14} />, view: { kind: "connectors" } },
-      { label: "Events", icon: <Zap size={14} />, view: { kind: "events" } },
+      { label: "Audit Log", icon: <Zap size={14} />, view: { kind: "events" } },
       { label: "Appearance", icon: <Palette size={14} />, view: { kind: "settings" } },
     ];
     const apps = surfaces.map((s) => ({
@@ -5216,45 +5217,68 @@ function AutomationsView() {
 
 function EventsView() {
   const [events, setEvents] = useState<
-    { id: string; type: string; plugin_id: string; payload: unknown; created_at: string }[]
+    { id: string; type: string; summary: string; actor_name: string; plugin_id: string | null; payload: unknown; created_at: string }[]
   >([]);
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    api<typeof events>("/api/events?limit=50").then(setEvents).catch(() => {});
+    api<{ items: typeof events }>("/api/audit?limit=100").then((r) => setEvents(r.items)).catch(() => {});
   }, []);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  const types = useMemo(() => {
-    const s = new Set(events.map((e) => e.type));
+  // group filter chips by event-type prefix (record, plugin, agent, ...)
+  const prefixes = useMemo(() => {
+    const s = new Set(events.map((e) => e.type.split(".")[0]));
     return [...s].sort();
   }, [events]);
 
-  const shown = filter ? events.filter((e) => e.type === filter) : events;
+  const shown = filter ? events.filter((e) => e.type.startsWith(filter)) : events;
+
+  function exportCsv() {
+    const qs = filter ? `?type=${encodeURIComponent(filter)}` : "";
+    // download via anchor with auth header is not possible; open in new tab (token in localStorage is sent by api(), so use fetch+blob)
+    api<Blob>(`/api/audit/export.csv${qs}`, { raw: true }).then((text) => {
+      const blob = new Blob([text as unknown as string], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "audit-log.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    }).catch(() => {});
+  }
 
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold">⚡ Events</h1>
+          <h1 className="text-xl font-bold">⚡ Audit Log</h1>
           <p className="mt-1 text-sm text-muted">
-            The event seam — every action in the kernel lands here. Automation, analytics forwarding,
-            and AI context all plug into this stream.
+            Every action in the workspace — who did what, when. Filter by category, expand for the full
+            payload, or export to CSV for compliance.
           </p>
         </div>
-        <button
-          onClick={load}
-          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted transition hover:border-border-strong hover:text-foreground"
-        >
-          <RotateCcw size={12} /> Refresh
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={exportCsv}
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted transition hover:border-border-strong hover:text-foreground"
+          >
+            <Download size={12} /> Export CSV
+          </button>
+          <button
+            onClick={load}
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-muted transition hover:border-border-strong hover:text-foreground"
+          >
+            <RotateCcw size={12} /> Refresh
+          </button>
+        </div>
       </div>
 
-      {types.length > 0 && (
+      {prefixes.length > 0 && (
         <div className="mt-4 flex flex-wrap gap-1.5">
           <button
             onClick={() => setFilter("")}
@@ -5264,7 +5288,7 @@ function EventsView() {
           >
             All ({events.length})
           </button>
-          {types.map((t) => (
+          {prefixes.map((t) => (
             <button
               key={t}
               onClick={() => setFilter(filter === t ? "" : t)}
@@ -5285,10 +5309,15 @@ function EventsView() {
               onClick={() => setExpanded(expanded === e.id ? null : e.id)}
               className="flex w-full items-center justify-between gap-3 text-left"
             >
-              <span className="font-mono text-xs text-accent">{e.type}</span>
-              <span className="text-[11px] text-muted">
-                {e.plugin_id && <span className="mr-2">🧩 {e.plugin_id}</span>}
-                {new Date(e.created_at).toLocaleTimeString()}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{e.summary}</span>
+                <span className="block truncate text-[11px] text-muted">
+                  {e.actor_name} · <span className="font-mono text-accent">{e.type}</span>
+                  {e.plugin_id && <span> · 🧩 {e.plugin_id}</span>}
+                </span>
+              </span>
+              <span className="shrink-0 text-[11px] text-muted">
+                {new Date(e.created_at).toLocaleString()}
                 <span className="ml-2 text-faint">{expanded === e.id ? "▾" : "▸"}</span>
               </span>
             </button>
@@ -5301,7 +5330,7 @@ function EventsView() {
         ))}
         {shown.length === 0 && (
           <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
-            {filter ? `No events of type ${filter}.` : "No events yet."}
+            {filter ? `No events in category ${filter}.` : "No events yet."}
           </div>
         )}
       </div>
