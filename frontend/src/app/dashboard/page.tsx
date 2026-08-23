@@ -129,6 +129,7 @@ type View =
   | { kind: "inventory" }
   | { kind: "hr" }
   | { kind: "approvals" }
+  | { kind: "quotes" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -506,6 +507,14 @@ function SidebarContent({
           label="Approvals"
         />
 
+        {/* Quotes — sales quotes & proposals */}
+        <NavItem
+          active={view.kind === "quotes"}
+          onClick={() => go({ kind: "quotes" })}
+          icon={<FileText size={15} />}
+          label="Quotes"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -850,6 +859,7 @@ export default function DashboardPage() {
             {view.kind === "inventory" && <InventoryView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "hr" && <HRView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "approvals" && <ApprovalsView isAdmin={me.role === "owner" || me.role === "admin"} setView={setView} />}
+            {view.kind === "quotes" && <QuotesView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5389,6 +5399,309 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase Y: Quotes ---------------- */
+
+interface QuoteLineItem {
+  description: string;
+  quantity: number;
+  unit_price_cents: number;
+}
+interface QuoteDef {
+  id: string;
+  number: string;
+  customer_name: string;
+  title: string;
+  notes: string;
+  currency: string;
+  status: string;
+  valid_until: string;
+  line_items: QuoteLineItem[];
+  subtotal_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  invoice_record_id: string | null;
+  created_at: string | null;
+}
+
+const QUOTE_STATUS_STYLE: Record<string, string> = {
+  draft: "bg-background text-muted",
+  sent: "bg-accent/10 text-accent",
+  accepted: "bg-success/10 text-success",
+  declined: "bg-danger/10 text-danger",
+  converted: "bg-warning/10 text-warning",
+};
+
+function fmtCents(c: number, currency = "USD") {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(c / 100);
+}
+
+function QuotesView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [quotes, setQuotes] = useState<QuoteDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fCustomer, setFCustomer] = useState("");
+  const [fTitle, setFTitle] = useState("");
+  const [fValidUntil, setFValidUntil] = useState("");
+  const [fItems, setFItems] = useState<QuoteLineItem[]>([{ description: "", quantity: 1, unit_price_cents: 0 }]);
+
+  const load = useCallback(async () => {
+    try {
+      const qs = statusFilter ? `?status=${statusFilter}` : "";
+      const res = await api<{ items: QuoteDef[]; total: number }>(`/api/quotes${qs}`);
+      setQuotes(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  function updateItem(idx: number, patch: Partial<QuoteLineItem>) {
+    setFItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  }
+
+  async function createQuote() {
+    if (!fCustomer.trim()) {
+      toast("Enter a customer name", "error");
+      return;
+    }
+    const items = fItems.filter((i) => i.description.trim());
+    if (items.length === 0) {
+      toast("Add at least one line item", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/quotes", {
+        method: "POST",
+        body: { customer_name: fCustomer.trim(), title: fTitle, valid_until: fValidUntil, line_items: items },
+      });
+      toast("Quote created", "success");
+      setShowForm(false);
+      setFCustomer(""); setFTitle(""); setFValidUntil("");
+      setFItems([{ description: "", quantity: 1, unit_price_cents: 0 }]);
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function action(q: QuoteDef, act: "send" | "accept" | "decline" | "convert") {
+    setBusy(q.id);
+    try {
+      await api(`/api/quotes/${q.id}/${act}`, { method: "POST", body: {} });
+      toast(`Quote ${act === "convert" ? "converted to invoice" : act + "ed"}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeQuote(q: QuoteDef) {
+    setBusy(q.id);
+    try {
+      await api(`/api/quotes/${q.id}`, { method: "DELETE" });
+      toast(`Deleted ${q.number}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const formTotal = fItems.reduce((a, i) => a + i.quantity * i.unit_price_cents, 0);
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Quotes</h1>
+          <p className="mt-0.5 text-xs text-muted">Sales quotes &amp; proposals — send, accept, and convert to invoices.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New quote"}
+          </button>
+        )}
+      </div>
+
+      {/* status filter */}
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        {["", "draft", "sent", "accepted", "declined", "converted"].map((st) => (
+          <button key={st} onClick={() => setStatusFilter(st)}
+            className={`rounded-md px-3 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+            {st || "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New quote</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-muted">
+              Customer
+              <input value={fCustomer} onChange={(e) => setFCustomer(e.target.value)} placeholder="Acme Corp"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Title
+              <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Website redesign"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Valid until
+              <input type="date" value={fValidUntil} onChange={(e) => setFValidUntil(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          {/* line items */}
+          <div className="mt-4 space-y-2">
+            <div className="text-xs font-semibold text-muted">Line items</div>
+            {fItems.map((item, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <input value={item.description} onChange={(e) => updateItem(idx, { description: e.target.value })} placeholder="Description"
+                  className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                <input type="number" min={1} value={item.quantity} onChange={(e) => updateItem(idx, { quantity: Math.max(1, parseInt(e.target.value) || 1) })}
+                  className="w-16 rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                <input type="number" min={0} step={100} value={item.unit_price_cents} onChange={(e) => updateItem(idx, { unit_price_cents: Math.max(0, parseInt(e.target.value) || 0) })}
+                  placeholder="¢" className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                <span className="w-20 text-right text-xs text-muted">{fmtCents(item.quantity * item.unit_price_cents)}</span>
+                {fItems.length > 1 && (
+                  <button onClick={() => setFItems((p) => p.filter((_, i) => i !== idx))} className="text-muted hover:text-danger"><Trash2 size={13} /></button>
+                )}
+              </div>
+            ))}
+            <button onClick={() => setFItems((p) => [...p, { description: "", quantity: 1, unit_price_cents: 0 }])}
+              className="text-xs text-accent hover:underline">+ Add line</button>
+          </div>
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-sm font-semibold">Total: {fmtCents(formTotal)}</span>
+            <div className="flex items-center gap-2">
+              <button onClick={createQuote} disabled={busy === "create" || !fCustomer.trim()}
+                className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                {busy === "create" ? "Creating…" : "Create quote"}
+              </button>
+              <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* quote list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {quotes.map((q) => (
+            <div key={q.id} className="rounded-xl border border-border bg-card">
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <button onClick={() => setExpanded(expanded === q.id ? null : q.id)} className="flex min-w-0 items-center gap-3 text-left">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{q.number}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${QUOTE_STATUS_STYLE[q.status] ?? "bg-background text-muted"}`}>{q.status}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {q.customer_name || "—"}{q.title && <span> · {q.title}</span>}
+                      {q.valid_until && <span> · valid until {q.valid_until}</span>}
+                    </div>
+                  </div>
+                </button>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span className="text-sm font-bold">{fmtCents(q.total_cents, q.currency)}</span>
+                  {canEdit && q.status === "draft" && (
+                    <button onClick={() => action(q, "send")} disabled={busy === q.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent disabled:opacity-50">Send</button>
+                  )}
+                  {canEdit && q.status === "sent" && (
+                    <>
+                      <button onClick={() => action(q, "accept")} disabled={busy === q.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Accept</button>
+                      <button onClick={() => action(q, "decline")} disabled={busy === q.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Decline</button>
+                    </>
+                  )}
+                  {canEdit && q.status === "accepted" && (
+                    <button onClick={() => action(q, "convert")} disabled={busy === q.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-warning disabled:opacity-50">→ Invoice</button>
+                  )}
+                  {isAdmin && (
+                    <button onClick={() => removeQuote(q)} disabled={busy === q.id}
+                      className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                  )}
+                </div>
+              </div>
+              {/* expanded line items */}
+              {expanded === q.id && (
+                <div className="border-t border-border px-4 py-3">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-muted">
+                        <th className="pb-1">Description</th>
+                        <th className="pb-1 text-right">Qty</th>
+                        <th className="pb-1 text-right">Unit</th>
+                        <th className="pb-1 text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {q.line_items.map((li, i) => (
+                        <tr key={i} className="border-t border-border/50">
+                          <td className="py-1">{li.description}</td>
+                          <td className="py-1 text-right">{li.quantity}</td>
+                          <td className="py-1 text-right">{fmtCents(li.unit_price_cents, q.currency)}</td>
+                          <td className="py-1 text-right">{fmtCents(li.quantity * li.unit_price_cents, q.currency)}</td>
+                        </tr>
+                      ))}
+                      <tr className="border-t border-border font-semibold">
+                        <td colSpan={3} className="py-1 text-right">Subtotal</td>
+                        <td className="py-1 text-right">{fmtCents(q.subtotal_cents, q.currency)}</td>
+                      </tr>
+                      {q.tax_cents > 0 && (
+                        <tr><td colSpan={3} className="py-0.5 text-right text-muted">Tax</td><td className="py-0.5 text-right">{fmtCents(q.tax_cents, q.currency)}</td></tr>
+                      )}
+                      <tr className="font-bold">
+                        <td colSpan={3} className="py-1 text-right">Total</td>
+                        <td className="py-1 text-right">{fmtCents(q.total_cents, q.currency)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  {q.invoice_record_id && (
+                    <p className="mt-2 text-[11px] text-muted">Converted to invoice record {q.invoice_record_id.slice(0, 8)}…</p>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          {quotes.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No quotes yet. Create your first quote to get started.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
