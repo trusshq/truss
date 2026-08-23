@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Activity,
+  Banknote,
   BarChart3,
   Bell,
   Bot,
@@ -149,6 +150,7 @@ type View =
   | { kind: "surveys" }
   | { kind: "loyalty" }
   | { kind: "recruiting" }
+  | { kind: "payroll" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -622,6 +624,14 @@ function SidebarContent({
           label="Recruiting"
         />
 
+        {/* Payroll — profiles, pay runs, payslips */}
+        <NavItem
+          active={view.kind === "payroll"}
+          onClick={() => go({ kind: "payroll" })}
+          icon={<Banknote size={15} />}
+          label="Payroll"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -978,6 +988,7 @@ export default function DashboardPage() {
             {view.kind === "surveys" && <SurveysView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "loyalty" && <LoyaltyView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "recruiting" && <RecruitingView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "payroll" && <PayrollView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5514,6 +5525,417 @@ function AutomationsView() {
         {runs.length === 0 && (
           <div className="rounded-lg border border-dashed border-border px-4 py-4 text-center text-xs text-muted">
             No runs yet. Trigger one — e.g. set a lead&apos;s status to Converted.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Major Phase 7: Payroll ---------------- */
+
+interface PrProfileDef {
+  id: string;
+  employee_id: string;
+  annual_salary_cents: number;
+  frequency: string;
+  tax_rate_pct: number;
+  currency: string;
+  status: string;
+  created_at: string | null;
+}
+interface PrRunDef {
+  id: string;
+  period_start: string;
+  period_end: string;
+  status: string;
+  total_gross_cents: number;
+  total_tax_cents: number;
+  total_net_cents: number;
+  created_at: string | null;
+}
+interface PrSlipDef {
+  id: string;
+  pay_run_id: string;
+  employee_id: string;
+  gross_cents: number;
+  tax_cents: number;
+  net_cents: number;
+  status: string;
+  created_at: string | null;
+}
+interface PrEmployeeDef {
+  id: string;
+  name: string;
+  email: string;
+  status: string;
+}
+
+const RUN_STATUS_STYLE: Record<string, string> = {
+  draft: "bg-background text-muted",
+  approved: "bg-accent/10 text-accent",
+  paid: "bg-success/10 text-success",
+  cancelled: "bg-danger/10 text-danger",
+};
+const SLIP_STATUS_STYLE: Record<string, string> = {
+  pending: "bg-accent/10 text-accent",
+  paid: "bg-success/10 text-success",
+};
+
+function PayrollView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [profiles, setProfiles] = useState<PrProfileDef[]>([]);
+  const [runs, setRuns] = useState<PrRunDef[]>([]);
+  const [slips, setSlips] = useState<PrSlipDef[]>([]);
+  const [employees, setEmployees] = useState<PrEmployeeDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // profile form
+  const [showProfileForm, setShowProfileForm] = useState(false);
+  const [pfEmployee, setPfEmployee] = useState("");
+  const [pfSalary, setPfSalary] = useState("");
+  const [pfFreq, setPfFreq] = useState("monthly");
+  const [pfTax, setPfTax] = useState("20");
+
+  // run form
+  const [showRunForm, setShowRunForm] = useState(false);
+  const [runStart, setRunStart] = useState("");
+  const [runEnd, setRunEnd] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [pfRes, runRes, slipRes, empRes] = await Promise.all([
+        api<{ items: PrProfileDef[] }>("/api/payroll/profiles"),
+        api<{ items: PrRunDef[] }>("/api/payroll/runs"),
+        api<{ items: PrSlipDef[] }>("/api/payroll/payslips"),
+        api<{ items: PrEmployeeDef[] }>("/api/hr/employees"),
+      ]);
+      setProfiles(pfRes.items);
+      setRuns(runRes.items);
+      setSlips(slipRes.items);
+      setEmployees(empRes.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const empById = (id: string) => employees.find((e) => e.id === id);
+  // employees without a profile yet (and active)
+  const unprofiled = employees.filter(
+    (e) => e.status === "active" && !profiles.some((p) => p.employee_id === e.id)
+  );
+
+  async function createProfile() {
+    if (!pfEmployee) {
+      toast("Pick an employee", "error");
+      return;
+    }
+    const salaryDollars = parseFloat(pfSalary);
+    if (Number.isNaN(salaryDollars) || salaryDollars <= 0) {
+      toast("Enter an annual salary", "error");
+      return;
+    }
+    setBusy("create-profile");
+    try {
+      await api("/api/payroll/profiles", {
+        method: "POST",
+        body: {
+          employee_id: pfEmployee,
+          annual_salary_cents: Math.round(salaryDollars * 100),
+          frequency: pfFreq,
+          tax_rate_pct: Math.max(0, Math.min(100, parseInt(pfTax) || 0)),
+        },
+      });
+      toast("Payroll profile created", "success");
+      setShowProfileForm(false);
+      setPfEmployee(""); setPfSalary(""); setPfFreq("monthly"); setPfTax("20");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createRun() {
+    if (!runStart || !runEnd) {
+      toast("Pick a period start and end", "error");
+      return;
+    }
+    setBusy("create-run");
+    try {
+      await api("/api/payroll/runs", {
+        method: "POST",
+        body: { period_start: runStart, period_end: runEnd },
+      });
+      toast("Pay run drafted (payslips generated)", "success");
+      setShowRunForm(false);
+      setRunStart(""); setRunEnd("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runAction(r: PrRunDef, act: "approve" | "pay" | "cancel") {
+    setBusy(r.id);
+    try {
+      await api(`/api/payroll/runs/${r.id}/${act}`, { method: "POST", body: {} });
+      toast(`Pay run ${act === "approve" ? "approved" : act === "pay" ? "paid" : "cancelled"}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeRun(r: PrRunDef) {
+    setBusy(r.id);
+    try {
+      await api(`/api/payroll/runs/${r.id}`, { method: "DELETE" });
+      toast("Draft run deleted", "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggleProfile(p: PrProfileDef) {
+    setBusy(p.id);
+    try {
+      await api(`/api/payroll/profiles/${p.id}`, {
+        method: "PATCH",
+        body: { status: p.status === "active" ? "paused" : "active" },
+      });
+      toast(p.status === "active" ? "Profile paused" : "Profile resumed", "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Update failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Payroll</h1>
+          <p className="mt-0.5 text-xs text-muted">Salary profiles, pay runs, and payslips: draft → approve → pay.</p>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowProfileForm((v) => !v)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              {showProfileForm ? "Close" : "+ New profile"}
+            </button>
+            <button onClick={() => setShowRunForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+              {showRunForm ? "Close" : "+ New pay run"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* profile form */}
+      {showProfileForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New payroll profile</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Employee
+              <select value={pfEmployee} onChange={(e) => setPfEmployee(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="">Select an employee…</option>
+                {unprofiled.map((e) => (
+                  <option key={e.id} value={e.id}>{e.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Annual salary ($)
+              <input type="number" min={1} value={pfSalary} onChange={(e) => setPfSalary(e.target.value)} placeholder="120000"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Frequency
+              <select value={pfFreq} onChange={(e) => setPfFreq(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="monthly">Monthly (12/yr)</option>
+                <option value="biweekly">Biweekly (26/yr)</option>
+                <option value="weekly">Weekly (52/yr)</option>
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Tax rate (%)
+              <input type="number" min={0} max={100} value={pfTax} onChange={(e) => setPfTax(e.target.value)} placeholder="20"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createProfile} disabled={busy === "create-profile" || !pfEmployee}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-profile" ? "Creating…" : "Create profile"}
+            </button>
+            <button onClick={() => setShowProfileForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* run form */}
+      {showRunForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New pay run</h2>
+          <p className="mt-1 text-xs text-muted">Generates one payslip per active profile for the period.</p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Period start
+              <input type="date" value={runStart} onChange={(e) => setRunStart(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Period end
+              <input type="date" value={runEnd} onChange={(e) => setRunEnd(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createRun} disabled={busy === "create-run" || !runStart || !runEnd}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-run" ? "Drafting…" : "Draft run"}
+            </button>
+            <button onClick={() => setShowRunForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* pay runs */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Pay runs</h2>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="space-y-2">
+            {runs.map((r) => (
+              <div key={r.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">{r.period_start} → {r.period_end}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${RUN_STATUS_STYLE[r.status] ?? "bg-background text-muted"}`}>{r.status}</span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    Gross {fmtCents(r.total_gross_cents)} · Tax {fmtCents(r.total_tax_cents)} · Net <span className="font-semibold text-foreground">{fmtCents(r.total_net_cents)}</span>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {isAdmin && r.status === "draft" && (
+                    <button onClick={() => runAction(r, "approve")} disabled={busy === r.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent disabled:opacity-50">Approve</button>
+                  )}
+                  {isAdmin && r.status === "approved" && (
+                    <button onClick={() => runAction(r, "pay")} disabled={busy === r.id}
+                      className="rounded-lg bg-accent px-3 py-1 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">Pay</button>
+                  )}
+                  {isAdmin && (r.status === "draft" || r.status === "approved") && (
+                    <button onClick={() => runAction(r, "cancel")} disabled={busy === r.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                  )}
+                  {isAdmin && r.status === "draft" && (
+                    <button onClick={() => removeRun(r)} disabled={busy === r.id}
+                      className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                  )}
+                </div>
+              </div>
+            ))}
+            {runs.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+                No pay runs yet. Draft one to generate payslips.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* profiles */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Payroll profiles</h2>
+        {loading ? (
+          <div className="skeleton h-16 w-full rounded-xl" />
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {profiles.map((p) => {
+              const emp = empById(p.employee_id);
+              return (
+                <div key={p.id} className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{emp ? emp.name : "unknown employee"}</span>
+                      {p.status === "paused" && <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">paused</span>}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {fmtCents(p.annual_salary_cents, p.currency)}/yr · {p.frequency} · {p.tax_rate_pct}% tax
+                    </div>
+                  </div>
+                  {canEdit && (
+                    <button onClick={() => toggleProfile(p)} disabled={busy === p.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent disabled:opacity-50">
+                      {p.status === "active" ? "Pause" : "Resume"}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {profiles.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted md:col-span-2">
+                No profiles yet. Create one for an active employee.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* payslips */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Payslips</h2>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="space-y-2">
+            {slips.map((s) => {
+              const emp = empById(s.employee_id);
+              return (
+                <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{emp ? emp.name : "unknown employee"}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${SLIP_STATUS_STYLE[s.status] ?? "bg-background text-muted"}`}>{s.status}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      Gross {fmtCents(s.gross_cents)} · Tax {fmtCents(s.tax_cents)} · Net <span className="font-semibold text-foreground">{fmtCents(s.net_cents)}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {slips.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+                No payslips yet. Draft a pay run to generate them.
+              </div>
+            )}
           </div>
         )}
       </div>
