@@ -68,6 +68,7 @@ SUITES = [
     "goals_smoke_test.py",
     "surveys_smoke_test.py",
     "loyalty_smoke_test.py",
+    "recruiting_smoke_test.py",
 ]
 
 

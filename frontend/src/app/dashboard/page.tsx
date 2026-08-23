@@ -148,6 +148,7 @@ type View =
   | { kind: "okrs" }
   | { kind: "surveys" }
   | { kind: "loyalty" }
+  | { kind: "recruiting" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -613,6 +614,14 @@ function SidebarContent({
           label="Loyalty"
         />
 
+        {/* Recruiting — jobs, candidates, pipeline */}
+        <NavItem
+          active={view.kind === "recruiting"}
+          onClick={() => go({ kind: "recruiting" })}
+          icon={<UserPlus size={15} />}
+          label="Recruiting"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -968,6 +977,7 @@ export default function DashboardPage() {
             {view.kind === "okrs" && <OKRsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "surveys" && <SurveysView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "loyalty" && <LoyaltyView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "recruiting" && <RecruitingView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5504,6 +5514,465 @@ function AutomationsView() {
         {runs.length === 0 && (
           <div className="rounded-lg border border-dashed border-border px-4 py-4 text-center text-xs text-muted">
             No runs yet. Trigger one — e.g. set a lead&apos;s status to Converted.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AJ: Recruiting ---------------- */
+
+interface RcJobDef {
+  id: string;
+  title: string;
+  department: string;
+  location: string;
+  employment_type: string;
+  description: string;
+  status: string;
+  created_at: string | null;
+}
+interface RcCandidateDef {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  source: string;
+  skills: string;
+  created_at: string | null;
+}
+interface RcApplicationDef {
+  id: string;
+  job_id: string;
+  candidate_id: string;
+  stage: string;
+  notes: string;
+  created_at: string | null;
+}
+
+const JOB_STATUS_STYLE: Record<string, string> = {
+  open: "bg-success/10 text-success",
+  closed: "bg-background text-muted",
+  filled: "bg-accent/10 text-accent",
+};
+const STAGE_STYLE: Record<string, string> = {
+  applied: "bg-background text-muted",
+  screening: "bg-accent/10 text-accent",
+  interview: "bg-warning/10 text-warning",
+  offer: "bg-accent/10 text-accent",
+  hired: "bg-success/10 text-success",
+  rejected: "bg-danger/10 text-danger",
+};
+const STAGE_NEXT: Record<string, string[]> = {
+  applied: ["screening", "rejected"],
+  screening: ["interview", "rejected"],
+  interview: ["offer", "rejected"],
+  offer: ["hired", "rejected"],
+};
+
+function RecruitingView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [jobs, setJobs] = useState<RcJobDef[]>([]);
+  const [candidates, setCandidates] = useState<RcCandidateDef[]>([]);
+  const [applications, setApplications] = useState<RcApplicationDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // job form
+  const [showJobForm, setShowJobForm] = useState(false);
+  const [jTitle, setJTitle] = useState("");
+  const [jDept, setJDept] = useState("");
+  const [jLoc, setJLoc] = useState("");
+  const [jType, setJType] = useState("full_time");
+
+  // candidate form
+  const [showCandForm, setShowCandForm] = useState(false);
+  const [cName, setCName] = useState("");
+  const [cEmail, setCEmail] = useState("");
+  const [cSource, setCSource] = useState("other");
+  const [cSkills, setCSkills] = useState("");
+
+  // apply form
+  const [applyJob, setApplyJob] = useState("");
+  const [applyCand, setApplyCand] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [jobRes, candRes, appRes] = await Promise.all([
+        api<{ items: RcJobDef[] }>("/api/recruiting/jobs"),
+        api<{ items: RcCandidateDef[] }>("/api/recruiting/candidates"),
+        api<{ items: RcApplicationDef[] }>("/api/recruiting/applications"),
+      ]);
+      setJobs(jobRes.items);
+      setCandidates(candRes.items);
+      setApplications(appRes.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const jobById = (id: string) => jobs.find((j) => j.id === id);
+  const candById = (id: string) => candidates.find((c) => c.id === id);
+
+  async function createJob() {
+    if (!jTitle.trim()) {
+      toast("Enter a job title", "error");
+      return;
+    }
+    setBusy("create-job");
+    try {
+      await api("/api/recruiting/jobs", {
+        method: "POST",
+        body: { title: jTitle.trim(), department: jDept.trim(), location: jLoc.trim(), employment_type: jType },
+      });
+      toast("Job posted", "success");
+      setShowJobForm(false);
+      setJTitle(""); setJDept(""); setJLoc(""); setJType("full_time");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createCandidate() {
+    if (!cName.trim()) {
+      toast("Enter a candidate name", "error");
+      return;
+    }
+    setBusy("create-cand");
+    try {
+      await api("/api/recruiting/candidates", {
+        method: "POST",
+        body: { name: cName.trim(), email: cEmail.trim(), source: cSource, skills: cSkills.trim() },
+      });
+      toast("Candidate added", "success");
+      setShowCandForm(false);
+      setCName(""); setCEmail(""); setCSource("other"); setCSkills("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function apply() {
+    if (!applyJob || !applyCand) {
+      toast("Pick a job and a candidate", "error");
+      return;
+    }
+    setBusy("apply");
+    try {
+      await api("/api/recruiting/applications", {
+        method: "POST",
+        body: { job_id: applyJob, candidate_id: applyCand },
+      });
+      toast("Application created", "success");
+      setApplyJob(""); setApplyCand("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Apply failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function moveStage(a: RcApplicationDef, stage: string) {
+    setBusy(a.id);
+    try {
+      await api(`/api/recruiting/applications/${a.id}/stage`, { method: "POST", body: { stage } });
+      toast(`Moved to ${stage}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Move failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeJob(j: RcJobDef) {
+    setBusy(j.id);
+    try {
+      await api(`/api/recruiting/jobs/${j.id}`, { method: "DELETE" });
+      toast(`Deleted ${j.title}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeCandidate(c: RcCandidateDef) {
+    setBusy(c.id);
+    try {
+      await api(`/api/recruiting/candidates/${c.id}`, { method: "DELETE" });
+      toast(`Removed ${c.name}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Recruiting</h1>
+          <p className="mt-0.5 text-xs text-muted">Jobs, candidates, and a hiring pipeline: applied → screening → interview → offer → hired.</p>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowCandForm((v) => !v)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              {showCandForm ? "Close" : "+ Add candidate"}
+            </button>
+            <button onClick={() => setShowJobForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+              {showJobForm ? "Close" : "+ Post job"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* job form */}
+      {showJobForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Post a job</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Title
+              <input value={jTitle} onChange={(e) => setJTitle(e.target.value)} placeholder="Backend Engineer"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Department
+              <input value={jDept} onChange={(e) => setJDept(e.target.value)} placeholder="Engineering"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Location
+              <input value={jLoc} onChange={(e) => setJLoc(e.target.value)} placeholder="Remote"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Employment type
+              <select value={jType} onChange={(e) => setJType(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="full_time">Full-time</option>
+                <option value="part_time">Part-time</option>
+                <option value="contract">Contract</option>
+                <option value="intern">Intern</option>
+              </select>
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createJob} disabled={busy === "create-job" || !jTitle.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-job" ? "Posting…" : "Post job"}
+            </button>
+            <button onClick={() => setShowJobForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* candidate form */}
+      {showCandForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Add a candidate</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Name
+              <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="Carol"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Email
+              <input value={cEmail} onChange={(e) => setCEmail(e.target.value)} placeholder="carol@example.com"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Source
+              <select value={cSource} onChange={(e) => setCSource(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="other">Other</option>
+                <option value="referral">Referral</option>
+                <option value="job_board">Job board</option>
+                <option value="website">Website</option>
+                <option value="agency">Agency</option>
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Skills
+              <input value={cSkills} onChange={(e) => setCSkills(e.target.value)} placeholder="python, fastapi"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createCandidate} disabled={busy === "create-cand" || !cName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-cand" ? "Adding…" : "Add candidate"}
+            </button>
+            <button onClick={() => setShowCandForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* apply form */}
+      {canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Apply a candidate to a job</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-muted">
+              Job
+              <select value={applyJob} onChange={(e) => setApplyJob(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="">Select a job…</option>
+                {jobs.filter((j) => j.status === "open").map((j) => (
+                  <option key={j.id} value={j.id}>{j.title}{j.department && ` — ${j.department}`}</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Candidate
+              <select value={applyCand} onChange={(e) => setApplyCand(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="">Select a candidate…</option>
+                {candidates.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </label>
+            <div className="flex items-end">
+              <button onClick={apply} disabled={busy === "apply" || !applyJob || !applyCand}
+                className="w-full rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                {busy === "apply" ? "Applying…" : "Apply"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* jobs */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Jobs</h2>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {jobs.map((j) => (
+              <div key={j.id} className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">{j.title}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${JOB_STATUS_STYLE[j.status] ?? "bg-background text-muted"}`}>{j.status}</span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    {[j.department, j.location, j.employment_type.replace("_", "-")].filter(Boolean).join(" · ")}
+                  </div>
+                </div>
+                {isAdmin && (
+                  <button onClick={() => removeJob(j)} disabled={busy === j.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                )}
+              </div>
+            ))}
+            {jobs.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted md:col-span-2">
+                No jobs yet. Post one to start hiring.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* candidates */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Candidates</h2>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {candidates.map((c) => (
+              <div key={c.id} className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">{c.name}</span>
+                    <span className="rounded-full bg-background px-2 py-0.5 text-[10px] capitalize text-muted">{c.source.replace("_", " ")}</span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    {c.email || "no email"}{c.skills && ` · ${c.skills}`}
+                  </div>
+                </div>
+                {isAdmin && (
+                  <button onClick={() => removeCandidate(c)} disabled={busy === c.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                )}
+              </div>
+            ))}
+            {candidates.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted md:col-span-2">
+                No candidates yet. Add one to build your talent pool.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* applications / pipeline */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Applications</h2>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="space-y-2">
+            {applications.map((a) => {
+              const job = jobById(a.job_id);
+              const cand = candById(a.candidate_id);
+              const nexts = STAGE_NEXT[a.stage] ?? [];
+              return (
+                <div key={a.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{cand ? cand.name : "unknown candidate"}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${STAGE_STYLE[a.stage] ?? "bg-background text-muted"}`}>{a.stage}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {job ? job.title : "unknown job"}{a.notes && ` · ${a.notes}`}
+                    </div>
+                  </div>
+                  {canEdit && nexts.length > 0 && (
+                    <div className="flex shrink-0 items-center gap-2">
+                      {nexts.map((nxt) => (
+                        <button key={nxt} onClick={() => moveStage(a, nxt)} disabled={busy === a.id}
+                          className={`rounded-lg border border-border px-3 py-1 text-xs capitalize transition disabled:opacity-50 ${nxt === "rejected" ? "text-muted hover:text-danger" : "text-muted hover:text-success"}`}>
+                          {nxt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {applications.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+                No applications yet. Apply a candidate above.
+              </div>
+            )}
           </div>
         )}
       </div>
