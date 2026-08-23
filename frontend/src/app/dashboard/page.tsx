@@ -35,6 +35,7 @@ import {
   LayoutGrid,
   LifeBuoy,
   LogOut,
+  Megaphone,
   Menu,
   MessageSquare,
   Monitor,
@@ -136,6 +137,7 @@ type View =
   | { kind: "purchase_orders" }
   | { kind: "contracts" }
   | { kind: "tickets" }
+  | { kind: "campaigns" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -545,6 +547,14 @@ function SidebarContent({
           label="Tickets"
         />
 
+        {/* Campaigns — marketing */}
+        <NavItem
+          active={view.kind === "campaigns"}
+          onClick={() => go({ kind: "campaigns" })}
+          icon={<Megaphone size={15} />}
+          label="Campaigns"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -893,6 +903,7 @@ export default function DashboardPage() {
             {view.kind === "purchase_orders" && <PurchaseOrdersView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "contracts" && <ContractsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "tickets" && <TicketsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "campaigns" && <CampaignsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5432,6 +5443,271 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AC: Campaigns ---------------- */
+
+interface CampaignDef {
+  id: string;
+  name: string;
+  channel: string;
+  subject: string;
+  content: string;
+  audience: string;
+  audience_size: number;
+  status: string;
+  scheduled_for: string;
+  sent_at: string;
+  sent_count: number;
+  opened_count: number;
+  clicked_count: number;
+  open_rate: number;
+  click_rate: number;
+  created_at: string | null;
+}
+
+const CAMPAIGN_STATUS_STYLE: Record<string, string> = {
+  draft: "bg-background text-muted",
+  scheduled: "bg-accent/10 text-accent",
+  sent: "bg-warning/10 text-warning",
+  completed: "bg-success/10 text-success",
+};
+const CAMPAIGN_CHANNEL_ICON: Record<string, string> = {
+  email: "✉️",
+  sms: "💬",
+  social: "📣",
+  ads: "🎯",
+};
+
+function CampaignsView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [campaigns, setCampaigns] = useState<CampaignDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fName, setFName] = useState("");
+  const [fChannel, setFChannel] = useState("email");
+  const [fSubject, setFSubject] = useState("");
+  const [fContent, setFContent] = useState("");
+  const [fAudience, setFAudience] = useState("");
+  const [fSize, setFSize] = useState("");
+  const [fScheduled, setFScheduled] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const qs = statusFilter ? `?status=${statusFilter}` : "";
+      const res = await api<{ items: CampaignDef[]; total: number }>(`/api/campaigns${qs}`);
+      setCampaigns(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function createCampaign() {
+    if (!fName.trim()) {
+      toast("Enter a campaign name", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/campaigns", {
+        method: "POST",
+        body: {
+          name: fName.trim(), channel: fChannel, subject: fSubject, content: fContent,
+          audience: fAudience.trim(), audience_size: Math.max(0, parseInt(fSize) || 0),
+          scheduled_for: fScheduled,
+        },
+      });
+      toast("Campaign created", "success");
+      setShowForm(false);
+      setFName(""); setFChannel("email"); setFSubject(""); setFContent("");
+      setFAudience(""); setFSize(""); setFScheduled("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function action(c: CampaignDef, act: "schedule" | "send" | "complete") {
+    setBusy(c.id);
+    try {
+      await api(`/api/campaigns/${c.id}/${act}`, { method: "POST", body: {} });
+      toast(`Campaign ${act === "send" ? "sent" : act + (act === "schedule" ? "d" : "d")}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeCampaign(c: CampaignDef) {
+    setBusy(c.id);
+    try {
+      await api(`/api/campaigns/${c.id}`, { method: "DELETE" });
+      toast(`Deleted ${c.name}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Campaigns</h1>
+          <p className="mt-0.5 text-xs text-muted">Marketing pushes across email, SMS, social, and ads — with performance tracking.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New campaign"}
+          </button>
+        )}
+      </div>
+
+      {/* status filter */}
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        {["", "draft", "scheduled", "sent", "completed"].map((st) => (
+          <button key={st} onClick={() => setStatusFilter(st)}
+            className={`rounded-md px-3 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+            {st || "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New campaign</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Name
+              <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="Summer Sale"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Channel
+              <select value={fChannel} onChange={(e) => setFChannel(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                {["email", "sms", "social", "ads"].map((ch) => <option key={ch} value={ch}>{ch}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Subject
+              <input value={fSubject} onChange={(e) => setFSubject(e.target.value)} placeholder="50% off"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Audience size
+              <input type="number" min={0} value={fSize} onChange={(e) => setFSize(e.target.value)} placeholder="1000"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Audience
+              <input value={fAudience} onChange={(e) => setFAudience(e.target.value)} placeholder="all active customers"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Content
+              <textarea value={fContent} onChange={(e) => setFContent(e.target.value)} rows={2} placeholder="Message body"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Scheduled for
+              <input type="datetime-local" value={fScheduled} onChange={(e) => setFScheduled(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createCampaign} disabled={busy === "create" || !fName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create" ? "Creating…" : "Create campaign"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* campaign list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {campaigns.map((c) => (
+            <div key={c.id} className="rounded-xl border border-border bg-card px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">{CAMPAIGN_CHANNEL_ICON[c.channel] ?? "📣"}</span>
+                    <span className="text-sm font-semibold">{c.name}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${CAMPAIGN_STATUS_STYLE[c.status] ?? "bg-background text-muted"}`}>{c.status}</span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    {c.subject || c.channel}{c.audience && <span> · {c.audience}</span>}
+                    {c.scheduled_for && c.status === "scheduled" && <span> · scheduled {new Date(c.scheduled_for).toLocaleString()}</span>}
+                    {c.sent_at && <span> · sent {new Date(c.sent_at).toLocaleString()}</span>}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {canEdit && c.status === "draft" && (
+                    <>
+                      <button onClick={() => action(c, "schedule")} disabled={busy === c.id || !c.scheduled_for}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent disabled:opacity-50">Schedule</button>
+                      <button onClick={() => action(c, "send")} disabled={busy === c.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-warning disabled:opacity-50">Send now</button>
+                    </>
+                  )}
+                  {canEdit && c.status === "scheduled" && (
+                    <button onClick={() => action(c, "send")} disabled={busy === c.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-warning disabled:opacity-50">Send now</button>
+                  )}
+                  {canEdit && c.status === "sent" && (
+                    <button onClick={() => action(c, "complete")} disabled={busy === c.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Complete</button>
+                  )}
+                  {isAdmin && (
+                    <button onClick={() => removeCampaign(c)} disabled={busy === c.id}
+                      className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                  )}
+                </div>
+              </div>
+              {/* performance metrics */}
+              {(c.status === "sent" || c.status === "completed") && (
+                <div className="mt-3 grid grid-cols-2 gap-2 border-t border-border pt-3 sm:grid-cols-5">
+                  <div><div className="text-[10px] text-muted">Sent</div><div className="text-sm font-bold">{c.sent_count}</div></div>
+                  <div><div className="text-[10px] text-muted">Opened</div><div className="text-sm font-bold">{c.opened_count}</div></div>
+                  <div><div className="text-[10px] text-muted">Clicked</div><div className="text-sm font-bold">{c.clicked_count}</div></div>
+                  <div><div className="text-[10px] text-muted">Open rate</div><div className="text-sm font-bold text-accent">{c.open_rate}%</div></div>
+                  <div><div className="text-[10px] text-muted">Click rate</div><div className="text-sm font-bold text-success">{c.click_rate}%</div></div>
+                </div>
+              )}
+            </div>
+          ))}
+          {campaigns.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No campaigns yet. Create one to start reaching your audience.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
