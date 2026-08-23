@@ -15,7 +15,7 @@ from truss_kernel.events import bus
 from truss_kernel.migrate import run_migrations
 from truss_kernel.models.base import Base
 from truss_kernel.plugins.registry import registry
-from truss_kernel.routes import agents, ai, apikeys, approvals, assets, audit, auth, automations, billing, bookings, calendar, campaigns, connectors, contracts, dashboard, dev, events, expenses, files, forms, goals, hr, insights, inventory, kb, marketplace, objects, orchestration, org, plugins, projects, purchase_orders, quotes, records, reports, search, subscriptions, surveys, tickets, time, workspace
+from truss_kernel.routes import agents, ai, apikeys, approvals, assets, audit, auth, automations, billing, bookings, calendar, campaigns, connectors, contracts, dashboard, dev, events, expenses, files, forms, goals, hr, insights, inventory, kb, loyalty, marketplace, objects, orchestration, org, plugins, projects, purchase_orders, quotes, records, reports, search, subscriptions, surveys, tickets, time, workspace
 from truss_kernel.services import reports as reports_svc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -115,6 +115,7 @@ app.include_router(subscriptions.router)
 app.include_router(bookings.router)
 app.include_router(goals.router)
 app.include_router(surveys.router)
+app.include_router(loyalty.router)
 
 
 @app.get("/api/health", tags=["meta"])

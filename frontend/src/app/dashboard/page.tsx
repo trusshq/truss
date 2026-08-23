@@ -29,6 +29,7 @@ import {
   FileText,
   FileSignature,
   FolderKanban,
+  Gift,
   History,
   Home,
   Inbox,
@@ -146,6 +147,7 @@ type View =
   | { kind: "bookings" }
   | { kind: "okrs" }
   | { kind: "surveys" }
+  | { kind: "loyalty" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -603,6 +605,14 @@ function SidebarContent({
           label="Surveys"
         />
 
+        {/* Loyalty — points, tiers, rewards */}
+        <NavItem
+          active={view.kind === "loyalty"}
+          onClick={() => go({ kind: "loyalty" })}
+          icon={<Gift size={15} />}
+          label="Loyalty"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -957,6 +967,7 @@ export default function DashboardPage() {
             {view.kind === "bookings" && <BookingsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "okrs" && <OKRsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "surveys" && <SurveysView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "loyalty" && <LoyaltyView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5493,6 +5504,462 @@ function AutomationsView() {
         {runs.length === 0 && (
           <div className="rounded-lg border border-dashed border-border px-4 py-4 text-center text-xs text-muted">
             No runs yet. Trigger one — e.g. set a lead&apos;s status to Converted.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AI: Loyalty ---------------- */
+
+interface LoyaltyMemberDef {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  points: number;
+  tier: string;
+  status: string;
+  created_at: string | null;
+}
+interface LoyaltyRewardDef {
+  id: string;
+  name: string;
+  description: string;
+  points_cost: number;
+  active: boolean;
+  created_at: string | null;
+}
+interface LoyaltyRedemptionDef {
+  id: string;
+  member_id: string;
+  reward_id: string;
+  points_spent: number;
+  status: string;
+  created_at: string | null;
+}
+
+const TIER_STYLE: Record<string, string> = {
+  bronze: "bg-warning/10 text-warning",
+  silver: "bg-background text-muted",
+  gold: "bg-accent/10 text-accent",
+};
+const REDEMPTION_STATUS_STYLE: Record<string, string> = {
+  pending: "bg-accent/10 text-accent",
+  fulfilled: "bg-success/10 text-success",
+  cancelled: "bg-danger/10 text-danger",
+};
+
+function LoyaltyView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [members, setMembers] = useState<LoyaltyMemberDef[]>([]);
+  const [rewards, setRewards] = useState<LoyaltyRewardDef[]>([]);
+  const [redemptions, setRedemptions] = useState<LoyaltyRedemptionDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // member form
+  const [showMemberForm, setShowMemberForm] = useState(false);
+  const [mName, setMName] = useState("");
+  const [mEmail, setMEmail] = useState("");
+
+  // points form (per member)
+  const [pointsTarget, setPointsTarget] = useState<string | null>(null);
+  const [pointsDelta, setPointsDelta] = useState("");
+  const [pointsReason, setPointsReason] = useState("");
+
+  // reward form
+  const [showRewardForm, setShowRewardForm] = useState(false);
+  const [rName, setRName] = useState("");
+  const [rCost, setRCost] = useState("");
+
+  // redeem form
+  const [redeemMember, setRedeemMember] = useState("");
+  const [redeemReward, setRedeemReward] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [memRes, rwRes, rdRes] = await Promise.all([
+        api<{ items: LoyaltyMemberDef[] }>("/api/loyalty/members"),
+        api<{ items: LoyaltyRewardDef[] }>("/api/loyalty/rewards"),
+        api<{ items: LoyaltyRedemptionDef[] }>("/api/loyalty/redemptions"),
+      ]);
+      setMembers(memRes.items);
+      setRewards(rwRes.items);
+      setRedemptions(rdRes.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const memberById = (id: string) => members.find((m) => m.id === id);
+  const rewardById = (id: string) => rewards.find((r) => r.id === id);
+
+  async function createMember() {
+    if (!mName.trim()) {
+      toast("Enter a member name", "error");
+      return;
+    }
+    setBusy("create-member");
+    try {
+      await api("/api/loyalty/members", { method: "POST", body: { name: mName.trim(), email: mEmail.trim() } });
+      toast("Member enrolled", "success");
+      setShowMemberForm(false);
+      setMName(""); setMEmail("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function adjustPoints(m: LoyaltyMemberDef) {
+    const delta = parseInt(pointsDelta);
+    if (Number.isNaN(delta) || delta === 0) {
+      toast("Enter a non-zero points amount", "error");
+      return;
+    }
+    setBusy(m.id);
+    try {
+      await api(`/api/loyalty/members/${m.id}/points`, {
+        method: "POST",
+        body: { delta, reason: pointsReason.trim() || (delta > 0 ? "Manual award" : "Manual deduction") },
+      });
+      toast(delta > 0 ? `Awarded ${delta} points` : `Deducted ${-delta} points`, "success");
+      setPointsTarget(null); setPointsDelta(""); setPointsReason("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Adjust failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createReward() {
+    if (!rName.trim()) {
+      toast("Enter a reward name", "error");
+      return;
+    }
+    setBusy("create-reward");
+    try {
+      await api("/api/loyalty/rewards", {
+        method: "POST",
+        body: { name: rName.trim(), points_cost: Math.max(1, parseInt(rCost) || 100) },
+      });
+      toast("Reward created", "success");
+      setShowRewardForm(false);
+      setRName(""); setRCost("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function redeem() {
+    if (!redeemMember || !redeemReward) {
+      toast("Pick a member and a reward", "error");
+      return;
+    }
+    setBusy("redeem");
+    try {
+      await api("/api/loyalty/redemptions", {
+        method: "POST",
+        body: { member_id: redeemMember, reward_id: redeemReward },
+      });
+      toast("Redeemed", "success");
+      setRedeemMember(""); setRedeemReward("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Redeem failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function redemptionAction(rd: LoyaltyRedemptionDef, act: "fulfill" | "cancel") {
+    setBusy(rd.id);
+    try {
+      await api(`/api/loyalty/redemptions/${rd.id}/${act}`, { method: "POST", body: {} });
+      toast(`Redemption ${act === "fulfill" ? "fulfilled" : "cancelled (points refunded)"}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeMember(m: LoyaltyMemberDef) {
+    setBusy(m.id);
+    try {
+      await api(`/api/loyalty/members/${m.id}`, { method: "DELETE" });
+      toast(`Removed ${m.name}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeReward(r: LoyaltyRewardDef) {
+    setBusy(r.id);
+    try {
+      await api(`/api/loyalty/rewards/${r.id}`, { method: "DELETE" });
+      toast(`Deleted reward ${r.name}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Loyalty & Rewards</h1>
+          <p className="mt-0.5 text-xs text-muted">Points program with tiers (bronze / silver / gold), a rewards catalog, and redemptions.</p>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowRewardForm((v) => !v)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              {showRewardForm ? "Close" : "+ New reward"}
+            </button>
+            <button onClick={() => setShowMemberForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+              {showMemberForm ? "Close" : "+ Enroll member"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* member form */}
+      {showMemberForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Enroll member</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Name
+              <input value={mName} onChange={(e) => setMName(e.target.value)} placeholder="Alice"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Email
+              <input value={mEmail} onChange={(e) => setMEmail(e.target.value)} placeholder="alice@example.com"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createMember} disabled={busy === "create-member" || !mName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-member" ? "Enrolling…" : "Enroll"}
+            </button>
+            <button onClick={() => setShowMemberForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* reward form */}
+      {showRewardForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New reward</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Name
+              <input value={rName} onChange={(e) => setRName(e.target.value)} placeholder="Free coffee"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Points cost
+              <input type="number" min={1} value={rCost} onChange={(e) => setRCost(e.target.value)} placeholder="200"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createReward} disabled={busy === "create-reward" || !rName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-reward" ? "Creating…" : "Create reward"}
+            </button>
+            <button onClick={() => setShowRewardForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* redeem form */}
+      {canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Redeem a reward</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-muted">
+              Member
+              <select value={redeemMember} onChange={(e) => setRedeemMember(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="">Select a member…</option>
+                {members.filter((m) => m.status === "active").map((m) => (
+                  <option key={m.id} value={m.id}>{m.name} ({m.points} pts · {m.tier})</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Reward
+              <select value={redeemReward} onChange={(e) => setRedeemReward(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="">Select a reward…</option>
+                {rewards.filter((r) => r.active).map((r) => (
+                  <option key={r.id} value={r.id}>{r.name} ({r.points_cost} pts)</option>
+                ))}
+              </select>
+            </label>
+            <div className="flex items-end">
+              <button onClick={redeem} disabled={busy === "redeem" || !redeemMember || !redeemReward}
+                className="w-full rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                {busy === "redeem" ? "Redeeming…" : "Redeem"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* members */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Members</h2>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="space-y-2">
+            {members.map((m) => (
+              <div key={m.id} className="rounded-xl border border-border bg-card px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{m.name}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${TIER_STYLE[m.tier] ?? "bg-background text-muted"}`}>{m.tier}</span>
+                      {m.status === "inactive" && <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">inactive</span>}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {m.email || "no email"} · <span className="font-semibold text-foreground">{m.points} pts</span>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {canEdit && m.status === "active" && (
+                      <button onClick={() => setPointsTarget(pointsTarget === m.id ? null : m.id)}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent">
+                        {pointsTarget === m.id ? "Close" : "Adjust points"}
+                      </button>
+                    )}
+                    {isAdmin && (
+                      <button onClick={() => removeMember(m)} disabled={busy === m.id}
+                        className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                    )}
+                  </div>
+                </div>
+                {/* points adjust */}
+                {pointsTarget === m.id && (
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    <input type="number" value={pointsDelta} onChange={(e) => setPointsDelta(e.target.value)} placeholder="+100 or -50"
+                      className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent" />
+                    <input value={pointsReason} onChange={(e) => setPointsReason(e.target.value)} placeholder="Reason"
+                      className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent" />
+                    <button onClick={() => adjustPoints(m)} disabled={busy === m.id || !pointsDelta}
+                      className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">Apply</button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {members.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+                No members yet. Enroll one to start the program.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* rewards */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Rewards catalog</h2>
+        {loading ? (
+          <div className="skeleton h-16 w-full rounded-xl" />
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {rewards.map((r) => (
+              <div key={r.id} className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">{r.name}</span>
+                    {!r.active && <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">inactive</span>}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">{r.points_cost} pts</div>
+                </div>
+                {isAdmin && (
+                  <button onClick={() => removeReward(r)} disabled={busy === r.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                )}
+              </div>
+            ))}
+            {rewards.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted md:col-span-2">
+                No rewards yet. Create one to offer redemptions.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* redemptions */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Redemptions</h2>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="space-y-2">
+            {redemptions.map((rd) => {
+              const mem = memberById(rd.member_id);
+              const rw = rewardById(rd.reward_id);
+              return (
+                <div key={rd.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{mem ? mem.name : "unknown member"}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${REDEMPTION_STATUS_STYLE[rd.status] ?? "bg-background text-muted"}`}>{rd.status}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {rw ? rw.name : "unknown reward"} · {rd.points_spent} pts
+                    </div>
+                  </div>
+                  {canEdit && rd.status === "pending" && (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button onClick={() => redemptionAction(rd, "fulfill")} disabled={busy === rd.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Fulfill</button>
+                      <button onClick={() => redemptionAction(rd, "cancel")} disabled={busy === rd.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {redemptions.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+                No redemptions yet. Redeem a reward above.
+              </div>
+            )}
           </div>
         )}
       </div>
