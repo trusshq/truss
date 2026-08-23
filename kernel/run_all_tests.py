@@ -47,6 +47,7 @@ SUITES = [
     "billing_smoke_test.py",
     "reports_smoke_test.py",
     "forms_smoke_test.py",
+    "files_smoke_test.py",
 ]
 
 

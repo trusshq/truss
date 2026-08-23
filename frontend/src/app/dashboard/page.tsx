@@ -34,6 +34,7 @@ import {
   Moon,
   Network,
   Palette,
+  Paperclip,
   Pencil,
   Plug,
   Puzzle,
@@ -112,6 +113,7 @@ type View =
   | { kind: "insights" }
   | { kind: "reports" }
   | { kind: "forms" }
+  | { kind: "files" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -415,6 +417,14 @@ function SidebarContent({
           onClick={() => go({ kind: "forms" })}
           icon={<Inbox size={15} />}
           label="Forms"
+        />
+
+        {/* Files — standalone */}
+        <NavItem
+          active={view.kind === "files"}
+          onClick={() => go({ kind: "files" })}
+          icon={<Paperclip size={15} />}
+          label="Files"
         />
 
         {/* Automations — automations, connectors, events */}
@@ -752,6 +762,7 @@ export default function DashboardPage() {
             {view.kind === "billing" && <BillingView isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "reports" && <ReportsView canEdit={me.role !== "viewer"} />}
             {view.kind === "forms" && <FormsView isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "files" && <FilesView canEdit={me.role !== "viewer"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5233,6 +5244,179 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase O: File Storage ---------------- */
+
+interface FileDef {
+  id: string;
+  name: string;
+  content_type: string;
+  size: number;
+  object: string | null;
+  record_id: string | null;
+  created_at: string;
+}
+
+function fmtBytes(n: number) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function FilesView({ canEdit }: { canEdit: boolean }) {
+  const [files, setFiles] = useState<FileDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api<{ items: FileDef[] }>("/api/files");
+      setFiles(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function uploadFiles(list: FileList | File[]) {
+    const token = getToken();
+    for (const file of Array.from(list)) {
+      setBusy(file.name);
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const res = await fetch(`${API_BASE}/api/files`, {
+          method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          body: fd,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(typeof err.detail === "string" ? err.detail : `Upload failed (${res.status})`);
+        }
+        toast(`Uploaded "${file.name}"`, "success");
+      } catch (err) {
+        toast(err instanceof Error ? err.message : "Upload failed", "error");
+      } finally {
+        setBusy(null);
+      }
+    }
+    await load();
+  }
+
+  async function downloadFile(f: FileDef) {
+    const token = getToken();
+    try {
+      const res = await fetch(`${API_BASE}/api/files/${f.id}/download`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error(`Download failed (${res.status})`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = f.name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Download failed", "error");
+    }
+  }
+
+  async function deleteFile(f: FileDef) {
+    setBusy(f.id);
+    try {
+      await api(`/api/files/${f.id}`, { method: "DELETE" });
+      toast(`Deleted "${f.name}"`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div>
+        <h1 className="text-xl font-bold">Files</h1>
+        <p className="mt-0.5 text-xs text-muted">Workspace file storage. Upload anything up to 25 MB — attach files to records from any object view.</p>
+      </div>
+
+      {canEdit && (
+        <div
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files); }}
+          onClick={() => inputRef.current?.click()}
+          className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-10 text-center transition ${dragOver ? "border-accent bg-accent-soft" : "border-border hover:border-accent"}`}
+        >
+          <Paperclip size={24} className="text-muted" />
+          <div className="mt-2 text-sm font-medium">{busy ? `Uploading ${busy}…` : "Drop files here or click to browse"}</div>
+          <div className="mt-0.5 text-xs text-muted">Max 25 MB per file</div>
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => { if (e.target.files?.length) uploadFiles(e.target.files); e.target.value = ""; }}
+          />
+        </div>
+      )}
+
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {files.map((f) => (
+            <div key={f.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-background text-muted">
+                  <Paperclip size={16} />
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold">{f.name}</div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    {fmtBytes(f.size)} · {f.content_type}
+                    {f.object && <span> · {f.object}{f.record_id ? ` #${f.record_id.slice(0, 8)}` : ""}</span>}
+                    {" · "}{new Date(f.created_at).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button onClick={() => downloadFile(f)} className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground">
+                  <Download size={12} className="mr-1 inline" />Download
+                </button>
+                {canEdit && (
+                  <button
+                    onClick={() => deleteFile(f)}
+                    disabled={busy === f.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          {files.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No files yet. Drop something above to get started.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

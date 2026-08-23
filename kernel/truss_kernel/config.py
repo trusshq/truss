@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     # Billing: enforce plan limits at kernel chokepoints (self-hosted can disable)
     billing_enforce: bool = True
 
+    # File storage: local disk by default (self-hosted-first); S3 later
+    storage_dir: str = "storage_files"
+    max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB per file
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
