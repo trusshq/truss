@@ -10,6 +10,7 @@ import {
   BookOpen,
   Boxes,
   Cable,
+  CalendarClock,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -141,6 +142,7 @@ type View =
   | { kind: "campaigns" }
   | { kind: "assets" }
   | { kind: "subscriptions" }
+  | { kind: "bookings" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -574,6 +576,14 @@ function SidebarContent({
           label="Subscriptions"
         />
 
+        {/* Bookings — appointments & scheduling */}
+        <NavItem
+          active={view.kind === "bookings"}
+          onClick={() => go({ kind: "bookings" })}
+          icon={<CalendarClock size={15} />}
+          label="Bookings"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -925,6 +935,7 @@ export default function DashboardPage() {
             {view.kind === "campaigns" && <CampaignsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "assets" && <AssetsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "subscriptions" && <SubscriptionsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "bookings" && <BookingsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5461,6 +5472,373 @@ function AutomationsView() {
         {runs.length === 0 && (
           <div className="rounded-lg border border-dashed border-border px-4 py-4 text-center text-xs text-muted">
             No runs yet. Trigger one — e.g. set a lead&apos;s status to Converted.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AF: Bookings ---------------- */
+
+interface BkServiceDef {
+  id: string;
+  name: string;
+  description: string;
+  duration_minutes: number;
+  price_cents: number;
+  currency: string;
+  active: boolean;
+  created_at: string | null;
+}
+interface BookingDef {
+  id: string;
+  service_id: string;
+  customer_name: string;
+  customer_email: string;
+  start_at: string;
+  end_at: string;
+  notes: string;
+  status: string;
+  created_at: string | null;
+}
+
+const BOOKING_STATUS_STYLE: Record<string, string> = {
+  pending: "bg-accent/10 text-accent",
+  confirmed: "bg-success/10 text-success",
+  completed: "bg-background text-muted",
+  cancelled: "bg-danger/10 text-danger",
+  no_show: "bg-warning/10 text-warning",
+};
+
+function BookingsView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [services, setServices] = useState<BkServiceDef[]>([]);
+  const [bookings, setBookings] = useState<BookingDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+
+  // service form
+  const [showSvcForm, setShowSvcForm] = useState(false);
+  const [svName, setSvName] = useState("");
+  const [svDuration, setSvDuration] = useState("30");
+  const [svPrice, setSvPrice] = useState("");
+
+  // booking form
+  const [showBkForm, setShowBkForm] = useState(false);
+  const [bkService, setBkService] = useState("");
+  const [bkName, setBkName] = useState("");
+  const [bkEmail, setBkEmail] = useState("");
+  const [bkStart, setBkStart] = useState("");
+  const [bkNotes, setBkNotes] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [svcRes, bkRes] = await Promise.all([
+        api<{ items: BkServiceDef[] }>("/api/bookings/services"),
+        api<{ items: BookingDef[] }>(`/api/bookings${statusFilter ? `?status=${statusFilter}` : ""}`),
+      ]);
+      setServices(svcRes.items);
+      setBookings(bkRes.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const serviceById = (id: string) => services.find((s) => s.id === id);
+
+  async function createService() {
+    if (!svName.trim()) {
+      toast("Enter a service name", "error");
+      return;
+    }
+    setBusy("create-svc");
+    try {
+      await api("/api/bookings/services", {
+        method: "POST",
+        body: {
+          name: svName.trim(),
+          duration_minutes: Math.max(5, parseInt(svDuration) || 30),
+          price_cents: Math.max(0, Math.round((parseFloat(svPrice) || 0) * 100)),
+        },
+      });
+      toast("Service created", "success");
+      setShowSvcForm(false);
+      setSvName(""); setSvDuration("30"); setSvPrice("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createBooking() {
+    if (!bkService || !bkName.trim() || !bkStart) {
+      toast("Pick a service, enter a customer, and choose a start time", "error");
+      return;
+    }
+    setBusy("create-bk");
+    try {
+      await api("/api/bookings", {
+        method: "POST",
+        body: {
+          service_id: bkService, customer_name: bkName.trim(), customer_email: bkEmail.trim(),
+          start_at: new Date(bkStart).toISOString(), notes: bkNotes,
+        },
+      });
+      toast("Booking created", "success");
+      setShowBkForm(false);
+      setBkService(""); setBkName(""); setBkEmail(""); setBkStart(""); setBkNotes("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function bkAction(bk: BookingDef, act: "confirm" | "complete" | "cancel" | "no-show") {
+    setBusy(bk.id);
+    try {
+      await api(`/api/bookings/${bk.id}/${act}`, { method: "POST", body: {} });
+      toast(`Booking ${act === "no-show" ? "marked no-show" : act + (act === "cancel" ? "led" : act === "confirm" ? "ed" : "d")}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeBooking(bk: BookingDef) {
+    setBusy(bk.id);
+    try {
+      await api(`/api/bookings/${bk.id}`, { method: "DELETE" });
+      toast(`Deleted booking for ${bk.customer_name}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeService(svc: BkServiceDef) {
+    setBusy(svc.id);
+    try {
+      await api(`/api/bookings/services/${svc.id}`, { method: "DELETE" });
+      toast(`Deleted service ${svc.name}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Bookings</h1>
+          <p className="mt-0.5 text-xs text-muted">Appointments & scheduling — services, time slots, and double-booking protection.</p>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowSvcForm((v) => !v)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              {showSvcForm ? "Close" : "+ New service"}
+            </button>
+            <button onClick={() => setShowBkForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+              {showBkForm ? "Close" : "+ New booking"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* service form */}
+      {showSvcForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New service</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-muted">
+              Name
+              <input value={svName} onChange={(e) => setSvName(e.target.value)} placeholder="Consultation"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Duration (minutes)
+              <input type="number" min={5} max={480} value={svDuration} onChange={(e) => setSvDuration(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Price
+              <input type="number" min={0} step="0.01" value={svPrice} onChange={(e) => setSvPrice(e.target.value)} placeholder="150.00"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createService} disabled={busy === "create-svc" || !svName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-svc" ? "Creating…" : "Create service"}
+            </button>
+            <button onClick={() => setShowSvcForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* booking form */}
+      {showBkForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New booking</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Service
+              <select value={bkService} onChange={(e) => setBkService(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="">Select a service…</option>
+                {services.filter((s) => s.active).map((s) => (
+                  <option key={s.id} value={s.id}>{s.name} ({s.duration_minutes} min · {fmtCents(s.price_cents)})</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Start time
+              <input type="datetime-local" value={bkStart} onChange={(e) => setBkStart(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Customer name
+              <input value={bkName} onChange={(e) => setBkName(e.target.value)} placeholder="Jane Doe"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Customer email
+              <input value={bkEmail} onChange={(e) => setBkEmail(e.target.value)} placeholder="jane@example.com"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Notes
+              <textarea value={bkNotes} onChange={(e) => setBkNotes(e.target.value)} rows={2} placeholder="Anything to know?"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createBooking} disabled={busy === "create-bk" || !bkService || !bkName.trim() || !bkStart}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-bk" ? "Creating…" : "Create booking"}
+            </button>
+            <button onClick={() => setShowBkForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* services */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Services</h2>
+        {loading ? (
+          <div className="skeleton h-16 w-full rounded-xl" />
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {services.map((svc) => (
+              <div key={svc.id} className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">{svc.name}</span>
+                    {!svc.active && <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">inactive</span>}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">{svc.duration_minutes} min · {fmtCents(svc.price_cents)}</div>
+                </div>
+                {isAdmin && (
+                  <button onClick={() => removeService(svc)} disabled={busy === svc.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                )}
+              </div>
+            ))}
+            {services.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted md:col-span-2">
+                No services yet. Create one to start taking appointments.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* bookings */}
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Appointments</h2>
+          <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1">
+            {["", "pending", "confirmed", "completed", "cancelled", "no_show"].map((st) => (
+              <button key={st} onClick={() => setStatusFilter(st)}
+                className={`rounded-md px-2.5 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+                {st ? st.replace("_", " ") : "All"}
+              </button>
+            ))}
+          </div>
+        </div>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="space-y-2">
+            {bookings.map((bk) => {
+              const svc = serviceById(bk.service_id);
+              return (
+                <div key={bk.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{bk.customer_name}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${BOOKING_STATUS_STYLE[bk.status] ?? "bg-background text-muted"}`}>{bk.status.replace("_", " ")}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {svc ? svc.name : "unknown service"}
+                      <span> · {new Date(bk.start_at).toLocaleString()} – {new Date(bk.end_at).toLocaleTimeString()}</span>
+                      {bk.customer_email && <span> · {bk.customer_email}</span>}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {canEdit && bk.status === "pending" && (
+                      <>
+                        <button onClick={() => bkAction(bk, "confirm")} disabled={busy === bk.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Confirm</button>
+                        <button onClick={() => bkAction(bk, "cancel")} disabled={busy === bk.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                      </>
+                    )}
+                    {canEdit && bk.status === "confirmed" && (
+                      <>
+                        <button onClick={() => bkAction(bk, "complete")} disabled={busy === bk.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground disabled:opacity-50">Complete</button>
+                        <button onClick={() => bkAction(bk, "no-show")} disabled={busy === bk.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-warning disabled:opacity-50">No-show</button>
+                        <button onClick={() => bkAction(bk, "cancel")} disabled={busy === bk.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                      </>
+                    )}
+                    {isAdmin && (
+                      <button onClick={() => removeBooking(bk)} disabled={busy === bk.id}
+                        className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {bookings.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+                No appointments yet. Create one to start scheduling.
+              </div>
+            )}
           </div>
         )}
       </div>
