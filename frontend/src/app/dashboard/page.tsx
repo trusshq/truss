@@ -7,6 +7,7 @@ import {
   BarChart3,
   Bell,
   Bot,
+  BookOpen,
   Boxes,
   Cable,
   CalendarDays,
@@ -116,6 +117,7 @@ type View =
   | { kind: "forms" }
   | { kind: "files" }
   | { kind: "calendar" }
+  | { kind: "kb" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -435,6 +437,14 @@ function SidebarContent({
           onClick={() => go({ kind: "calendar" })}
           icon={<CalendarDays size={15} />}
           label="Calendar"
+        />
+
+        {/* Knowledge Base — standalone */}
+        <NavItem
+          active={view.kind === "kb"}
+          onClick={() => go({ kind: "kb" })}
+          icon={<BookOpen size={15} />}
+          label="Knowledge Base"
         />
 
         {/* Automations — automations, connectors, events */}
@@ -774,6 +784,7 @@ export default function DashboardPage() {
             {view.kind === "forms" && <FormsView isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "files" && <FilesView canEdit={me.role !== "viewer"} />}
             {view.kind === "calendar" && <CalendarView canEdit={me.role !== "viewer"} />}
+            {view.kind === "kb" && <KBView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5255,6 +5266,298 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase Q: Knowledge Base ---------------- */
+
+interface KBArticle {
+  id: string;
+  title: string;
+  slug: string;
+  body?: string;
+  category: string;
+  tags: string[];
+  status: string;
+  object: string | null;
+  record_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function KBView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [articles, setArticles] = useState<KBArticle[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+
+  // editor state
+  const [editing, setEditing] = useState<KBArticle | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
+  const [fTitle, setFTitle] = useState("");
+  const [fSlug, setFSlug] = useState("");
+  const [fBody, setFBody] = useState("");
+  const [fCategory, setFCategory] = useState("");
+  const [fTags, setFTags] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (filter.trim()) params.set("q", filter.trim());
+      if (statusFilter) params.set("status", statusFilter);
+      const qs = params.toString();
+      const res = await api<{ items: KBArticle[] }>(`/api/kb${qs ? `?${qs}` : ""}`);
+      setArticles(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [filter, statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  function openNew() {
+    setEditing(null);
+    setFTitle("");
+    setFSlug("");
+    setFBody("");
+    setFCategory("");
+    setFTags("");
+    setShowEditor(true);
+  }
+
+  async function openEdit(a: KBArticle) {
+    setBusy(a.id);
+    try {
+      const full = await api<KBArticle>(`/api/kb/${a.id}`);
+      setEditing(full);
+      setFTitle(full.title);
+      setFSlug(full.slug);
+      setFBody(full.body ?? "");
+      setFCategory(full.category);
+      setFTags(full.tags.join(", "));
+      setShowEditor(true);
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Load failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function save() {
+    if (!fTitle.trim()) return;
+    setBusy("save");
+    const tags = fTags.split(",").map((t) => t.trim()).filter(Boolean);
+    try {
+      if (editing) {
+        await api(`/api/kb/${editing.id}`, {
+          method: "PATCH",
+          body: { title: fTitle.trim(), body: fBody, category: fCategory.trim(), tags },
+        });
+        toast(`Updated "${fTitle.trim()}"`, "success");
+      } else {
+        if (!fSlug.trim()) {
+          toast("Slug is required for a new article", "error");
+          setBusy(null);
+          return;
+        }
+        await api("/api/kb", {
+          method: "POST",
+          body: { title: fTitle.trim(), slug: fSlug.trim(), body: fBody, category: fCategory.trim(), tags },
+        });
+        toast(`Created "${fTitle.trim()}"`, "success");
+      }
+      setShowEditor(false);
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Save failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function publish(a: KBArticle) {
+    setBusy(a.id);
+    try {
+      await api(`/api/kb/${a.id}/publish`, { method: "POST" });
+      toast(`Published "${a.title}"`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Publish failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function unpublish(a: KBArticle) {
+    setBusy(a.id);
+    try {
+      await api(`/api/kb/${a.id}/unpublish`, { method: "POST" });
+      toast(`Unpublished "${a.title}"`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Unpublish failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function remove(a: KBArticle) {
+    setBusy(a.id);
+    try {
+      await api(`/api/kb/${a.id}`, { method: "DELETE" });
+      toast(`Deleted "${a.title}"`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Knowledge Base</h1>
+          <p className="mt-0.5 text-xs text-muted">Team wiki + public help center. Publish articles to share them without login.</p>
+        </div>
+        {canEdit && (
+          <button onClick={openNew} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            + New article
+          </button>
+        )}
+      </div>
+
+      {/* filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Search articles…"
+          className="w-56 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent"
+        />
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent"
+        >
+          <option value="">All statuses</option>
+          <option value="draft">Draft</option>
+          <option value="published">Published</option>
+        </select>
+      </div>
+
+      {/* editor */}
+      {showEditor && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">{editing ? `Edit: ${editing.title}` : "New article"}</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Title
+              <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Getting started"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Slug {editing ? <span className="text-faint">(fixed)</span> : <span className="text-faint">(lowercase, digits, hyphens)</span>}
+              <input value={fSlug} onChange={(e) => setFSlug(e.target.value.toLowerCase())} disabled={!!editing} placeholder="getting-started"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 font-mono text-sm text-foreground outline-none focus:border-accent disabled:opacity-50" />
+            </label>
+            <label className="text-xs text-muted">
+              Category
+              <input value={fCategory} onChange={(e) => setFCategory(e.target.value)} placeholder="Guides"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Tags <span className="text-faint">(comma separated)</span>
+              <input value={fTags} onChange={(e) => setFTags(e.target.value)} placeholder="onboarding, basics"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Body <span className="text-faint">(markdown)</span>
+              <textarea value={fBody} onChange={(e) => setFBody(e.target.value)} rows={8} placeholder="# Heading&#10;Write your article…"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 font-mono text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button onClick={save} disabled={busy === "save" || !fTitle.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "save" ? "Saving…" : editing ? "Save changes" : "Create article"}
+            </button>
+            <button onClick={() => setShowEditor(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {articles.map((a) => (
+            <div key={a.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold">{a.title}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] ${a.status === "published" ? "bg-success/10 text-success" : "bg-background text-muted"}`}>
+                    {a.status}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-xs text-muted">
+                  <span className="font-mono">/{a.slug}</span>
+                  {a.category && <span> · {a.category}</span>}
+                  {a.tags.length > 0 && <span> · {a.tags.join(", ")}</span>}
+                  {" · updated "}{new Date(a.updated_at).toLocaleString()}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {canEdit && (
+                  <>
+                    <button onClick={() => openEdit(a)} disabled={busy === a.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground disabled:opacity-50">
+                      <Pencil size={12} className="mr-1 inline" />Edit
+                    </button>
+                    {a.status === "draft" ? (
+                      <button onClick={() => publish(a)} disabled={busy === a.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">
+                        Publish
+                      </button>
+                    ) : (
+                      <button onClick={() => unpublish(a)} disabled={busy === a.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground disabled:opacity-50">
+                        Unpublish
+                      </button>
+                    )}
+                  </>
+                )}
+                {isAdmin && (
+                  <button onClick={() => remove(a)} disabled={busy === a.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          {articles.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No articles yet. Write one to start your team wiki.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
