@@ -9,6 +9,7 @@ import {
   Bot,
   Boxes,
   Cable,
+  CalendarDays,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -114,6 +115,7 @@ type View =
   | { kind: "reports" }
   | { kind: "forms" }
   | { kind: "files" }
+  | { kind: "calendar" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -425,6 +427,14 @@ function SidebarContent({
           onClick={() => go({ kind: "files" })}
           icon={<Paperclip size={15} />}
           label="Files"
+        />
+
+        {/* Calendar — standalone */}
+        <NavItem
+          active={view.kind === "calendar"}
+          onClick={() => go({ kind: "calendar" })}
+          icon={<CalendarDays size={15} />}
+          label="Calendar"
         />
 
         {/* Automations — automations, connectors, events */}
@@ -763,6 +773,7 @@ export default function DashboardPage() {
             {view.kind === "reports" && <ReportsView canEdit={me.role !== "viewer"} />}
             {view.kind === "forms" && <FormsView isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "files" && <FilesView canEdit={me.role !== "viewer"} />}
+            {view.kind === "calendar" && <CalendarView canEdit={me.role !== "viewer"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5243,6 +5254,252 @@ function AutomationsView() {
             No runs yet. Trigger one — e.g. set a lead&apos;s status to Converted.
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase P: Calendar ---------------- */
+
+interface CalEvent {
+  id: string;
+  title: string;
+  description: string;
+  starts_at: string;
+  ends_at: string | null;
+  all_day: boolean;
+  location: string;
+  attendees: string[];
+  object: string | null;
+  record_id: string | null;
+  created_at: string;
+}
+
+function CalendarView({ canEdit }: { canEdit: boolean }) {
+  const [events, setEvents] = useState<CalEvent[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [cursor, setCursor] = useState(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fTitle, setFTitle] = useState("");
+  const [fDate, setFDate] = useState("");
+  const [fTime, setFTime] = useState("09:00");
+  const [fDuration, setFDuration] = useState("60");
+  const [fLocation, setFLocation] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api<{ items: CalEvent[] }>("/api/calendar");
+      setEvents(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function createEvent() {
+    if (!fTitle.trim() || !fDate) return;
+    setBusy("create");
+    try {
+      const start = new Date(`${fDate}T${fTime || "09:00"}`);
+      const end = new Date(start.getTime() + parseInt(fDuration || "60", 10) * 60000);
+      await api("/api/calendar", {
+        method: "POST",
+        body: { title: fTitle.trim(), starts_at: start.toISOString(), ends_at: end.toISOString(), location: fLocation.trim() },
+      });
+      toast(`Scheduled "${fTitle.trim()}"`, "success");
+      setShowForm(false);
+      setFTitle("");
+      setFDate("");
+      setFLocation("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteEvent(ev: CalEvent) {
+    setBusy(ev.id);
+    try {
+      await api(`/api/calendar/${ev.id}`, { method: "DELETE" });
+      toast(`Deleted "${ev.title}"`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // ---- month grid ----
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const firstDow = new Date(year, month, 1).getDay(); // 0=Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells: (number | null)[] = [
+    ...Array.from({ length: firstDow }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+  const today = new Date();
+  const isToday = (day: number) =>
+    day === today.getDate() && month === today.getMonth() && year === today.getFullYear();
+
+  const eventsOn = (day: number) =>
+    events.filter((e) => {
+      const d = new Date(e.starts_at);
+      return d.getDate() === day && d.getMonth() === month && d.getFullYear() === year;
+    });
+
+  const upcoming = events
+    .filter((e) => new Date(e.starts_at) >= new Date())
+    .sort((a, b) => a.starts_at.localeCompare(b.starts_at))
+    .slice(0, 8);
+
+  const monthLabel = cursor.toLocaleString(undefined, { month: "long", year: "numeric" });
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Calendar</h1>
+          <p className="mt-0.5 text-xs text-muted">Workspace scheduling. Events can link to any record.</p>
+        </div>
+        {canEdit && (
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
+          >
+            {showForm ? "Cancel" : "+ New event"}
+          </button>
+        )}
+      </div>
+
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New event</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted md:col-span-2">
+              Title
+              <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Deal review"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Date
+              <input type="date" value={fDate} onChange={(e) => setFDate(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="text-xs text-muted">
+                Time
+                <input type="time" value={fTime} onChange={(e) => setFTime(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+              </label>
+              <label className="text-xs text-muted">
+                Duration (min)
+                <input type="number" min={5} step={5} value={fDuration} onChange={(e) => setFDuration(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+              </label>
+            </div>
+            <label className="text-xs text-muted md:col-span-2">
+              Location
+              <input value={fLocation} onChange={(e) => setFLocation(e.target.value)} placeholder="Zoom / Office"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <button
+            onClick={createEvent}
+            disabled={busy === "create" || !fTitle.trim() || !fDate}
+            className="mt-3 rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50"
+          >
+            {busy === "create" ? "Scheduling…" : "Schedule event"}
+          </button>
+        </div>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-[1fr_300px]">
+        {/* month grid */}
+        <div className="rounded-xl border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <button onClick={() => setCursor(new Date(year, month - 1, 1))} className="rounded-lg border border-border px-2 py-1 text-muted transition hover:text-foreground">
+              <ChevronLeft size={14} />
+            </button>
+            <span className="text-sm font-semibold">{monthLabel}</span>
+            <button onClick={() => setCursor(new Date(year, month + 1, 1))} className="rounded-lg border border-border px-2 py-1 text-muted transition hover:text-foreground">
+              <ChevronRight size={14} />
+            </button>
+          </div>
+          <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-semibold uppercase text-muted">
+            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => <div key={d} className="py-1">{d}</div>)}
+          </div>
+          <div className="mt-1 grid grid-cols-7 gap-1">
+            {cells.map((day, i) => (
+              <div
+                key={i}
+                className={`min-h-[64px] rounded-lg border p-1 text-left ${day === null ? "border-transparent" : isToday(day) ? "border-accent bg-accent-soft" : "border-border bg-background"}`}
+              >
+                {day !== null && (
+                  <>
+                    <div className={`text-[11px] ${isToday(day) ? "font-bold text-accent" : "text-muted"}`}>{day}</div>
+                    <div className="mt-0.5 space-y-0.5">
+                      {eventsOn(day).slice(0, 3).map((e) => (
+                        <div key={e.id} className="truncate rounded bg-accent px-1 py-0.5 text-[9px] font-medium text-on-accent" title={e.title}>
+                          {e.title}
+                        </div>
+                      ))}
+                      {eventsOn(day).length > 3 && <div className="text-[9px] text-muted">+{eventsOn(day).length - 3} more</div>}
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* upcoming list */}
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">Upcoming</h2>
+          <div className="mt-3 space-y-2">
+            {loading ? (
+              [0, 1, 2].map((i) => <div key={i} className="skeleton h-12 w-full rounded-lg" />)
+            ) : upcoming.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-muted">Nothing scheduled.</div>
+            ) : (
+              upcoming.map((e) => (
+                <div key={e.id} className="rounded-lg border border-border bg-background p-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold">{e.title}</div>
+                      <div className="mt-0.5 text-[10px] text-muted">
+                        {new Date(e.starts_at).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        {e.location && <span> · {e.location}</span>}
+                      </div>
+                      {e.object && <div className="mt-0.5 text-[10px] text-accent">{e.object}{e.record_id ? ` #${e.record_id.slice(0, 8)}` : ""}</div>}
+                    </div>
+                    {canEdit && (
+                      <button onClick={() => deleteEvent(e)} disabled={busy === e.id} className="shrink-0 text-muted transition hover:text-danger disabled:opacity-50">
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
