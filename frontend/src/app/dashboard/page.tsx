@@ -25,6 +25,7 @@ import {
   Database,
   Download,
   FileText,
+  FileSignature,
   FolderKanban,
   History,
   Home,
@@ -132,6 +133,7 @@ type View =
   | { kind: "approvals" }
   | { kind: "quotes" }
   | { kind: "purchase_orders" }
+  | { kind: "contracts" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -525,6 +527,14 @@ function SidebarContent({
           label="Purchase Orders"
         />
 
+        {/* Contracts — renewals & value tracking */}
+        <NavItem
+          active={view.kind === "contracts"}
+          onClick={() => go({ kind: "contracts" })}
+          icon={<FileSignature size={15} />}
+          label="Contracts"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -871,6 +881,7 @@ export default function DashboardPage() {
             {view.kind === "approvals" && <ApprovalsView isAdmin={me.role === "owner" || me.role === "admin"} setView={setView} />}
             {view.kind === "quotes" && <QuotesView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "purchase_orders" && <PurchaseOrdersView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "contracts" && <ContractsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5410,6 +5421,280 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AA: Contracts ---------------- */
+
+interface ContractDef {
+  id: string;
+  number: string;
+  name: string;
+  counterparty: string;
+  notes: string;
+  currency: string;
+  value_cents: number;
+  status: string;
+  start_date: string;
+  end_date: string;
+  auto_renew: boolean;
+  renewal_notice_days: number;
+  days_until_end?: number | null;
+  created_at: string | null;
+}
+
+const CONTRACT_STATUS_STYLE: Record<string, string> = {
+  draft: "bg-background text-muted",
+  active: "bg-success/10 text-success",
+  expired: "bg-warning/10 text-warning",
+  cancelled: "bg-danger/10 text-danger",
+};
+
+function ContractsView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [contracts, setContracts] = useState<ContractDef[]>([]);
+  const [renewals, setRenewals] = useState<ContractDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fName, setFName] = useState("");
+  const [fCounterparty, setFCounterparty] = useState("");
+  const [fValue, setFValue] = useState("");
+  const [fStart, setFStart] = useState("");
+  const [fEnd, setFEnd] = useState("");
+  const [fAutoRenew, setFAutoRenew] = useState(false);
+  const [fNotice, setFNotice] = useState("30");
+
+  const load = useCallback(async () => {
+    try {
+      const qs = statusFilter ? `?status=${statusFilter}` : "";
+      const [res, ren] = await Promise.all([
+        api<{ items: ContractDef[]; total: number }>(`/api/contracts${qs}`),
+        api<{ items: ContractDef[]; total: number }>("/api/contracts/renewals"),
+      ]);
+      setContracts(res.items);
+      setRenewals(ren.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function createContract() {
+    if (!fName.trim()) {
+      toast("Enter a contract name", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/contracts", {
+        method: "POST",
+        body: {
+          name: fName.trim(),
+          counterparty: fCounterparty.trim(),
+          value_cents: Math.max(0, Math.round((parseFloat(fValue) || 0) * 100)),
+          start_date: fStart,
+          end_date: fEnd,
+          auto_renew: fAutoRenew,
+          renewal_notice_days: Math.max(0, parseInt(fNotice) || 30),
+        },
+      });
+      toast("Contract created", "success");
+      setShowForm(false);
+      setFName(""); setFCounterparty(""); setFValue(""); setFStart(""); setFEnd("");
+      setFAutoRenew(false); setFNotice("30");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function action(c: ContractDef, act: "activate" | "cancel" | "expire") {
+    setBusy(c.id);
+    try {
+      await api(`/api/contracts/${c.id}/${act}`, { method: "POST", body: {} });
+      toast(`Contract ${act === "activate" ? "activated" : act + (act === "cancel" ? "led" : "d")}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeContract(c: ContractDef) {
+    setBusy(c.id);
+    try {
+      await api(`/api/contracts/${c.id}`, { method: "DELETE" });
+      toast(`Deleted ${c.number}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Contracts</h1>
+          <p className="mt-0.5 text-xs text-muted">Agreements with customers &amp; vendors — value, dates, and renewals.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New contract"}
+          </button>
+        )}
+      </div>
+
+      {/* renewal alerts */}
+      {renewals.length > 0 && (
+        <div className="rounded-xl border border-warning/40 bg-warning/5 px-4 py-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-warning">
+            <FileSignature size={14} />
+            {renewals.length} contract{renewals.length > 1 ? "s" : ""} need{renewals.length === 1 ? "s" : ""} renewal attention
+          </div>
+          <div className="mt-2 space-y-1">
+            {renewals.map((r) => (
+              <div key={r.id} className="flex items-center justify-between text-xs">
+                <span>{r.number} · {r.name} ({r.counterparty || "—"})</span>
+                <span className={r.days_until_end !== null && r.days_until_end! < 0 ? "font-semibold text-danger" : "text-muted"}>
+                  {r.days_until_end !== null && r.days_until_end! < 0
+                    ? `ended ${Math.abs(r.days_until_end!)} days ago`
+                    : `${r.days_until_end} days left`}
+                  {r.auto_renew && " · auto-renew"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* status filter */}
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        {["", "draft", "active", "expired", "cancelled"].map((st) => (
+          <button key={st} onClick={() => setStatusFilter(st)}
+            className={`rounded-md px-3 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+            {st || "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New contract</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Name
+              <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="Annual SaaS"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Counterparty
+              <input value={fCounterparty} onChange={(e) => setFCounterparty(e.target.value)} placeholder="Acme Corp"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Value ($)
+              <input type="number" min={0} step="0.01" value={fValue} onChange={(e) => setFValue(e.target.value)} placeholder="12000.00"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Renewal notice (days)
+              <input type="number" min={0} value={fNotice} onChange={(e) => setFNotice(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Start date
+              <input type="date" value={fStart} onChange={(e) => setFStart(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              End date
+              <input type="date" value={fEnd} onChange={(e) => setFEnd(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-xs text-muted">
+            <input type="checkbox" checked={fAutoRenew} onChange={(e) => setFAutoRenew(e.target.checked)} className="accent-accent" />
+            Auto-renew
+          </label>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createContract} disabled={busy === "create" || !fName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create" ? "Creating…" : "Create contract"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* contract list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {contracts.map((c) => (
+            <div key={c.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold">{c.number}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${CONTRACT_STATUS_STYLE[c.status] ?? "bg-background text-muted"}`}>{c.status}</span>
+                  {c.auto_renew && <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] text-accent">auto-renew</span>}
+                </div>
+                <div className="mt-0.5 text-xs text-muted">
+                  {c.name}{c.counterparty && <span> · {c.counterparty}</span>}
+                  {c.start_date && c.end_date && <span> · {c.start_date} → {c.end_date}</span>}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-3">
+                <span className="text-sm font-bold">{fmtCents(c.value_cents, c.currency)}</span>
+                {canEdit && c.status === "draft" && (
+                  <button onClick={() => action(c, "activate")} disabled={busy === c.id}
+                    className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Activate</button>
+                )}
+                {canEdit && c.status === "active" && (
+                  <>
+                    <button onClick={() => action(c, "expire")} disabled={busy === c.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-warning disabled:opacity-50">Expire</button>
+                    <button onClick={() => action(c, "cancel")} disabled={busy === c.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                  </>
+                )}
+                {canEdit && c.status === "draft" && (
+                  <button onClick={() => action(c, "cancel")} disabled={busy === c.id}
+                    className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                )}
+                {isAdmin && (
+                  <button onClick={() => removeContract(c)} disabled={busy === c.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                )}
+              </div>
+            </div>
+          ))}
+          {contracts.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No contracts yet. Create one to start tracking agreements and renewals.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
