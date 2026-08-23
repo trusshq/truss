@@ -33,6 +33,7 @@ import {
   Info,
   Kanban,
   LayoutGrid,
+  LifeBuoy,
   LogOut,
   Menu,
   MessageSquare,
@@ -134,6 +135,7 @@ type View =
   | { kind: "quotes" }
   | { kind: "purchase_orders" }
   | { kind: "contracts" }
+  | { kind: "tickets" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -535,6 +537,14 @@ function SidebarContent({
           label="Contracts"
         />
 
+        {/* Tickets — support helpdesk */}
+        <NavItem
+          active={view.kind === "tickets"}
+          onClick={() => go({ kind: "tickets" })}
+          icon={<LifeBuoy size={15} />}
+          label="Tickets"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -882,6 +892,7 @@ export default function DashboardPage() {
             {view.kind === "quotes" && <QuotesView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "purchase_orders" && <PurchaseOrdersView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "contracts" && <ContractsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "tickets" && <TicketsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5421,6 +5432,332 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AB: Support Tickets ---------------- */
+
+interface TicketDef {
+  id: string;
+  number: string;
+  subject: string;
+  description: string;
+  requester_email: string;
+  category: string;
+  priority: string;
+  status: string;
+  assignee_id: string | null;
+  sla_hours: number;
+  sla_breached: boolean;
+  resolved_at: string;
+  closed_at: string;
+  created_at: string | null;
+}
+interface TicketCommentDef {
+  id: string;
+  body: string;
+  internal: boolean;
+  author_id: string | null;
+  created_at: string | null;
+}
+
+const TICKET_STATUS_STYLE: Record<string, string> = {
+  open: "bg-accent/10 text-accent",
+  in_progress: "bg-warning/10 text-warning",
+  resolved: "bg-success/10 text-success",
+  closed: "bg-background text-muted",
+};
+const TICKET_PRIORITY_STYLE: Record<string, string> = {
+  low: "bg-background text-muted",
+  medium: "bg-accent/10 text-accent",
+  high: "bg-warning/10 text-warning",
+  urgent: "bg-danger/10 text-danger",
+};
+
+function TicketsView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [tickets, setTickets] = useState<TicketDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [comments, setComments] = useState<Record<string, TicketCommentDef[]>>({});
+  const [commentDraft, setCommentDraft] = useState("");
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fSubject, setFSubject] = useState("");
+  const [fDesc, setFDesc] = useState("");
+  const [fEmail, setFEmail] = useState("");
+  const [fCategory, setFCategory] = useState("General");
+  const [fPriority, setFPriority] = useState("medium");
+
+  const load = useCallback(async () => {
+    try {
+      const qs = statusFilter ? `?status=${statusFilter}` : "";
+      const res = await api<{ items: TicketDef[]; total: number }>(`/api/tickets${qs}`);
+      setTickets(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function createTicket() {
+    if (!fSubject.trim()) {
+      toast("Enter a subject", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/tickets", {
+        method: "POST",
+        body: {
+          subject: fSubject.trim(), description: fDesc, requester_email: fEmail.trim(),
+          category: fCategory, priority: fPriority,
+        },
+      });
+      toast("Ticket created", "success");
+      setShowForm(false);
+      setFSubject(""); setFDesc(""); setFEmail(""); setFCategory("General"); setFPriority("medium");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function action(t: TicketDef, act: "start" | "resolve" | "close" | "reopen") {
+    setBusy(t.id);
+    try {
+      await api(`/api/tickets/${t.id}/${act}`, { method: "POST", body: {} });
+      toast(`Ticket ${act === "start" ? "started" : act + (act === "close" ? "d" : act === "reopen" ? "ed" : "d")}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeTicket(t: TicketDef) {
+    setBusy(t.id);
+    try {
+      await api(`/api/tickets/${t.id}`, { method: "DELETE" });
+      toast(`Deleted ${t.number}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggleExpand(t: TicketDef) {
+    const next = expanded === t.id ? null : t.id;
+    setExpanded(next);
+    if (next && !comments[t.id]) {
+      try {
+        const res = await api<{ items: TicketCommentDef[] }>(`/api/tickets/${t.id}/comments`);
+        setComments((prev) => ({ ...prev, [t.id]: res.items }));
+      } catch {
+        setComments((prev) => ({ ...prev, [t.id]: [] }));
+      }
+    }
+  }
+
+  async function addComment(t: TicketDef) {
+    if (!commentDraft.trim()) return;
+    setBusy(t.id);
+    try {
+      await api(`/api/tickets/${t.id}/comments`, { method: "POST", body: { body: commentDraft.trim() } });
+      setCommentDraft("");
+      const res = await api<{ items: TicketCommentDef[] }>(`/api/tickets/${t.id}/comments`);
+      setComments((prev) => ({ ...prev, [t.id]: res.items }));
+      toast("Comment added", "success");
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Comment failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const breachedCount = tickets.filter((t) => t.sla_breached).length;
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Support Tickets</h1>
+          <p className="mt-0.5 text-xs text-muted">Helpdesk — track, assign, and resolve customer issues with SLAs.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New ticket"}
+          </button>
+        )}
+      </div>
+
+      {/* SLA breach banner */}
+      {breachedCount > 0 && (
+        <div className="rounded-xl border border-danger/40 bg-danger/5 px-4 py-3 text-sm font-semibold text-danger">
+          {breachedCount} ticket{breachedCount > 1 ? "s have" : " has"} breached SLA — prioritize these.
+        </div>
+      )}
+
+      {/* status filter */}
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        {["", "open", "in_progress", "resolved", "closed"].map((st) => (
+          <button key={st} onClick={() => setStatusFilter(st)}
+            className={`rounded-md px-3 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+            {st ? st.replace("_", " ") : "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New ticket</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted md:col-span-2">
+              Subject
+              <input value={fSubject} onChange={(e) => setFSubject(e.target.value)} placeholder="Cannot login"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Description
+              <textarea value={fDesc} onChange={(e) => setFDesc(e.target.value)} rows={2} placeholder="What is happening?"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Requester email
+              <input value={fEmail} onChange={(e) => setFEmail(e.target.value)} placeholder="cust@example.com"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Category
+              <input value={fCategory} onChange={(e) => setFCategory(e.target.value)} placeholder="General"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Priority
+              <select value={fPriority} onChange={(e) => setFPriority(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                {["low", "medium", "high", "urgent"].map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createTicket} disabled={busy === "create" || !fSubject.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create" ? "Creating…" : "Create ticket"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* ticket list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {tickets.map((t) => (
+            <div key={t.id} className="rounded-xl border border-border bg-card">
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <button onClick={() => toggleExpand(t)} className="flex min-w-0 items-center gap-3 text-left">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{t.number}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${TICKET_STATUS_STYLE[t.status] ?? "bg-background text-muted"}`}>{t.status.replace("_", " ")}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${TICKET_PRIORITY_STYLE[t.priority] ?? "bg-background text-muted"}`}>{t.priority}</span>
+                      {t.sla_breached && <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[10px] font-semibold text-danger">SLA breached</span>}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {t.subject}
+                      {t.requester_email && <span> · {t.requester_email}</span>}
+                      <span> · SLA {t.sla_hours}h</span>
+                    </div>
+                  </div>
+                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  {canEdit && t.status === "open" && (
+                    <>
+                      <button onClick={() => action(t, "start")} disabled={busy === t.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent disabled:opacity-50">Start</button>
+                      <button onClick={() => action(t, "resolve")} disabled={busy === t.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Resolve</button>
+                    </>
+                  )}
+                  {canEdit && t.status === "in_progress" && (
+                    <button onClick={() => action(t, "resolve")} disabled={busy === t.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Resolve</button>
+                  )}
+                  {canEdit && t.status === "resolved" && (
+                    <>
+                      <button onClick={() => action(t, "close")} disabled={busy === t.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground disabled:opacity-50">Close</button>
+                      <button onClick={() => action(t, "reopen")} disabled={busy === t.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-warning disabled:opacity-50">Reopen</button>
+                    </>
+                  )}
+                  {canEdit && t.status === "closed" && (
+                    <button onClick={() => action(t, "reopen")} disabled={busy === t.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-warning disabled:opacity-50">Reopen</button>
+                  )}
+                  {isAdmin && (
+                    <button onClick={() => removeTicket(t)} disabled={busy === t.id}
+                      className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                  )}
+                </div>
+              </div>
+              {/* expanded: description + comments */}
+              {expanded === t.id && (
+                <div className="border-t border-border px-4 py-3">
+                  {t.description && <p className="text-xs text-muted">{t.description}</p>}
+                  <div className="mt-3 space-y-2">
+                    <div className="text-xs font-semibold text-muted">Comments</div>
+                    {(comments[t.id] ?? []).map((c) => (
+                      <div key={c.id} className={`rounded-lg px-3 py-2 text-xs ${c.internal ? "bg-warning/5 border border-warning/30" : "bg-background"}`}>
+                        <span>{c.body}</span>
+                        {c.internal && <span className="ml-2 rounded-full bg-warning/10 px-2 py-0.5 text-[10px] text-warning">internal</span>}
+                        {c.created_at && <span className="ml-2 text-[10px] text-muted">{new Date(c.created_at).toLocaleString()}</span>}
+                      </div>
+                    ))}
+                    {(comments[t.id] ?? []).length === 0 && <p className="text-xs text-muted">No comments yet.</p>}
+                    {canEdit && (
+                      <div className="flex items-center gap-2">
+                        <input value={commentDraft} onChange={(e) => setCommentDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") addComment(t); }}
+                          placeholder="Add a comment…"
+                          className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent" />
+                        <button onClick={() => addComment(t)} disabled={busy === t.id || !commentDraft.trim()}
+                          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">Post</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          {tickets.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No tickets yet. Create one to start tracking support issues.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
