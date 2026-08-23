@@ -126,6 +126,7 @@ type View =
   | { kind: "expenses" }
   | { kind: "projects" }
   | { kind: "inventory" }
+  | { kind: "hr" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -487,6 +488,14 @@ function SidebarContent({
           label="Inventory"
         />
 
+        {/* HR / People — standalone */}
+        <NavItem
+          active={view.kind === "hr"}
+          onClick={() => go({ kind: "hr" })}
+          icon={<Users size={15} />}
+          label="People"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -829,6 +838,7 @@ export default function DashboardPage() {
             {view.kind === "expenses" && <ExpensesView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "projects" && <ProjectsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "inventory" && <InventoryView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "hr" && <HRView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5310,6 +5320,392 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase V: HR / People ---------------- */
+
+interface EmployeeDef {
+  id: string;
+  name: string;
+  email: string;
+  title: string;
+  department: string;
+  hire_date: string;
+  status: string;
+  notes: string;
+  created_at: string;
+}
+interface LeaveDef {
+  id: string;
+  employee_id: string;
+  leave_type: string;
+  start_date: string;
+  end_date: string;
+  reason: string;
+  status: string;
+  review_note: string;
+  created_at: string;
+}
+
+const EMPLOYEE_STATUS_STYLE: Record<string, string> = {
+  active: "bg-success/10 text-success",
+  on_leave: "bg-warning/10 text-warning",
+  terminated: "bg-danger/10 text-danger",
+};
+const LEAVE_STATUS_STYLE: Record<string, string> = {
+  pending: "bg-warning/10 text-warning",
+  approved: "bg-success/10 text-success",
+  rejected: "bg-danger/10 text-danger",
+};
+
+function HRView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [tab, setTab] = useState<"employees" | "leave">("employees");
+  const [employees, setEmployees] = useState<EmployeeDef[]>([]);
+  const [leaves, setLeaves] = useState<LeaveDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  // employee form
+  const [showForm, setShowForm] = useState(false);
+  const [fName, setFName] = useState("");
+  const [fEmail, setFEmail] = useState("");
+  const [fTitle, setFTitle] = useState("");
+  const [fDept, setFDept] = useState("General");
+  const [fHire, setFHire] = useState("");
+
+  // leave form
+  const [showLeaveForm, setShowLeaveForm] = useState(false);
+  const [lEmployee, setLEmployee] = useState("");
+  const [lType, setLType] = useState("vacation");
+  const [lStart, setLStart] = useState("");
+  const [lEnd, setLEnd] = useState("");
+  const [lReason, setLReason] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (search.trim()) params.set("q", search.trim());
+      const qs = params.toString();
+      const [emps, lvs] = await Promise.all([
+        api<{ items: EmployeeDef[] }>(`/api/hr/employees${qs ? `?${qs}` : ""}`),
+        api<{ items: LeaveDef[] }>("/api/hr/leave"),
+      ]);
+      setEmployees(emps.items);
+      setLeaves(lvs.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [search]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const empName = (id: string) => employees.find((e) => e.id === id)?.name ?? "Unknown";
+
+  async function createEmployee() {
+    if (!fName.trim() || !fEmail.trim()) {
+      toast("Enter a name and email", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/hr/employees", {
+        method: "POST",
+        body: { name: fName.trim(), email: fEmail.trim(), title: fTitle, department: fDept, hire_date: fHire },
+      });
+      toast(`Added ${fName.trim()}`, "success");
+      setShowForm(false);
+      setFName(""); setFEmail(""); setFTitle(""); setFDept("General"); setFHire("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeEmployee(e: EmployeeDef) {
+    setBusy(e.id);
+    try {
+      await api(`/api/hr/employees/${e.id}`, { method: "DELETE" });
+      toast(`Removed ${e.name}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createLeave() {
+    if (!lEmployee || !lStart || !lEnd) {
+      toast("Pick an employee and both dates", "error");
+      return;
+    }
+    setBusy("leave");
+    try {
+      await api("/api/hr/leave", {
+        method: "POST",
+        body: { employee_id: lEmployee, leave_type: lType, start_date: lStart, end_date: lEnd, reason: lReason },
+      });
+      toast("Leave request submitted", "success");
+      setShowLeaveForm(false);
+      setLEmployee(""); setLStart(""); setLEnd(""); setLReason("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Submit failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function reviewLeave(l: LeaveDef, action: "approve" | "reject") {
+    setBusy(l.id);
+    try {
+      await api(`/api/hr/leave/${l.id}/${action}`, { method: "POST", body: {} });
+      toast(`Leave ${action}d`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Review failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const pendingLeaves = leaves.filter((l) => l.status === "pending").length;
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">People</h1>
+          <p className="mt-0.5 text-xs text-muted">Employee directory and leave requests.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {canEdit && tab === "employees" && (
+            <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+              {showForm ? "Close" : "+ Add employee"}
+            </button>
+          )}
+          {canEdit && tab === "leave" && (
+            <button onClick={() => setShowLeaveForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+              {showLeaveForm ? "Close" : "+ Request leave"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* tabs */}
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        <button onClick={() => setTab("employees")}
+          className={`rounded-md px-4 py-1.5 text-sm transition ${tab === "employees" ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+          Employees ({employees.length})
+        </button>
+        <button onClick={() => setTab("leave")}
+          className={`rounded-md px-4 py-1.5 text-sm transition ${tab === "leave" ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+          Leave{pendingLeaves > 0 ? ` (${pendingLeaves} pending)` : ""}
+        </button>
+      </div>
+
+      {tab === "employees" && (
+        <>
+          {/* employee form */}
+          {showForm && isAdmin && (
+            <div className="rounded-xl border border-border bg-card p-4">
+              <h2 className="text-sm font-semibold">Add employee</h2>
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <label className="text-xs text-muted">
+                  Name
+                  <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="Alice Chen"
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                </label>
+                <label className="text-xs text-muted">
+                  Email
+                  <input value={fEmail} onChange={(e) => setFEmail(e.target.value)} placeholder="alice@company.com"
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                </label>
+                <label className="text-xs text-muted">
+                  Title
+                  <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Engineer"
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                </label>
+                <label className="text-xs text-muted">
+                  Department
+                  <input value={fDept} onChange={(e) => setFDept(e.target.value)} placeholder="Engineering"
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                </label>
+                <label className="text-xs text-muted">
+                  Hire date
+                  <input type="date" value={fHire} onChange={(e) => setFHire(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                </label>
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <button onClick={createEmployee} disabled={busy === "create" || !fName.trim() || !fEmail.trim()}
+                  className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                  {busy === "create" ? "Adding…" : "Add employee"}
+                </button>
+                <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* search */}
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name, email, or title…"
+            className="w-64 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+
+          {/* employee list */}
+          {loading ? (
+            <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+          ) : (
+            <div className="space-y-2">
+              {employees.map((e) => (
+                <div key={e.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent text-sm font-bold">
+                      {e.name.split(" ").map((w) => w[0]).slice(0, 2).join("").toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-semibold">{e.name}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${EMPLOYEE_STATUS_STYLE[e.status] ?? "bg-background text-muted"}`}>
+                          {e.status.replace("_", " ")}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted">
+                        {e.title || "—"} · {e.department}{e.hire_date && <span> · hired {e.hire_date}</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-xs text-muted">{e.email}</span>
+                    {isAdmin && (
+                      <button onClick={() => removeEmployee(e)} disabled={busy === e.id}
+                        className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">
+                        <Trash2 size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {employees.length === 0 && (
+                <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+                  No employees yet. Add your first team member.
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {tab === "leave" && (
+        <>
+          {/* leave form */}
+          {showLeaveForm && canEdit && (
+            <div className="rounded-xl border border-border bg-card p-4">
+              <h2 className="text-sm font-semibold">Request leave</h2>
+              <div className="mt-3 grid gap-3 md:grid-cols-3">
+                <label className="text-xs text-muted">
+                  Employee
+                  <select value={lEmployee} onChange={(e) => setLEmployee(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                    <option value="">Select…</option>
+                    {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs text-muted">
+                  Type
+                  <select value={lType} onChange={(e) => setLType(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                    <option value="vacation">Vacation</option>
+                    <option value="sick">Sick</option>
+                    <option value="personal">Personal</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label className="text-xs text-muted">
+                  Reason
+                  <input value={lReason} onChange={(e) => setLReason(e.target.value)} placeholder="Optional"
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                </label>
+                <label className="text-xs text-muted">
+                  Start date
+                  <input type="date" value={lStart} onChange={(e) => setLStart(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                </label>
+                <label className="text-xs text-muted">
+                  End date
+                  <input type="date" value={lEnd} onChange={(e) => setLEnd(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                </label>
+              </div>
+              <div className="mt-3 flex items-center gap-2">
+                <button onClick={createLeave} disabled={busy === "leave" || !lEmployee || !lStart || !lEnd}
+                  className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                  {busy === "leave" ? "Submitting…" : "Submit request"}
+                </button>
+                <button onClick={() => setShowLeaveForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* leave list */}
+          {loading ? (
+            <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+          ) : (
+            <div className="space-y-2">
+              {leaves.map((l) => (
+                <div key={l.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold">{empName(l.employee_id)}</span>
+                      <span className="rounded-full bg-background px-2 py-0.5 text-[10px] capitalize text-muted">{l.leave_type}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${LEAVE_STATUS_STYLE[l.status] ?? "bg-background text-muted"}`}>
+                        {l.status}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {l.start_date} → {l.end_date}{l.reason && <span> · {l.reason}</span>}
+                      {l.review_note && <span> · note: {l.review_note}</span>}
+                    </div>
+                  </div>
+                  {isAdmin && l.status === "pending" && (
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button onClick={() => reviewLeave(l, "approve")} disabled={busy === l.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">
+                        Approve
+                      </button>
+                      <button onClick={() => reviewLeave(l, "reject")} disabled={busy === l.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">
+                        Reject
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {leaves.length === 0 && (
+                <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+                  No leave requests yet.
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
