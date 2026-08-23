@@ -894,6 +894,7 @@ function HomeView({
   const [agentsCount, setAgentsCount] = useState(0);
   const [membersCount, setMembersCount] = useState(1);
   const [checklistDismissed, setChecklistDismissed] = useState(false);
+  const [kpis, setKpis] = useState<Record<string, number> | null>(null);
 
   const enabled = plugins.filter((p) => p.installed && p.enabled);
 
@@ -917,6 +918,10 @@ function HomeView({
     api<AgentInfo[]>("/api/agents").then((a) => setAgentsCount(a.length)).catch(() => {});
     api<{ members?: unknown[] } | unknown[]>("/api/workspace/members")
       .then((m) => setMembersCount(Array.isArray(m) ? m.length : (m as { members?: unknown[] }).members?.length ?? 1))
+      .catch(() => {});
+    // Phase W: unified KPI snapshot across all modules
+    api<Record<string, number>>("/api/dashboard")
+      .then(setKpis)
       .catch(() => {});
   }, [objects]);
 
@@ -1023,6 +1028,59 @@ function HomeView({
           <div className="mt-1 text-[11px] text-muted">bring your own model key</div>
         </button>
       </div>
+
+      {/* Phase W: workspace pulse — aggregated KPIs across all modules */}
+      {kpis && (
+        <div className="mt-6">
+          <h2 className="text-sm font-semibold text-muted">Workspace pulse</h2>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <button onClick={() => setView({ kind: "projects" })} className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong">
+              <div className="flex items-center gap-2 text-xs text-muted"><FolderKanban size={13} /> Projects</div>
+              <div className="mt-2 text-2xl font-bold">{kpis.projects_active}</div>
+              <div className="mt-1 text-[11px] text-muted">active of {kpis.projects_total}</div>
+            </button>
+            <button onClick={() => setView({ kind: "expenses" })} className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong">
+              <div className="flex items-center gap-2 text-xs text-muted"><Receipt size={13} /> Expenses</div>
+              <div className="mt-2 text-2xl font-bold">{kpis.expenses_submitted + kpis.expenses_pending}</div>
+              <div className="mt-1 text-[11px] text-muted">{kpis.expenses_submitted} awaiting review · {fmtMoney(kpis.expenses_approved_cents)} approved</div>
+            </button>
+            <button onClick={() => setView({ kind: "inventory" })} className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong">
+              <div className="flex items-center gap-2 text-xs text-muted"><Package size={13} /> Inventory</div>
+              <div className="mt-2 text-2xl font-bold">{kpis.products_total}</div>
+              <div className={`mt-1 text-[11px] ${kpis.products_low_stock > 0 ? "text-warning" : "text-muted"}`}>
+                {kpis.products_low_stock > 0 ? `${kpis.products_low_stock} low stock` : "stock healthy"}
+              </div>
+            </button>
+            <button onClick={() => setView({ kind: "hr" })} className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong">
+              <div className="flex items-center gap-2 text-xs text-muted"><Users size={13} /> People</div>
+              <div className="mt-2 text-2xl font-bold">{kpis.employees_total}</div>
+              <div className={`mt-1 text-[11px] ${kpis.leave_pending > 0 ? "text-warning" : "text-muted"}`}>
+                {kpis.leave_pending > 0 ? `${kpis.leave_pending} leave pending` : "no leave pending"}
+              </div>
+            </button>
+            <button onClick={() => setView({ kind: "calendar" })} className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong">
+              <div className="flex items-center gap-2 text-xs text-muted"><CalendarDays size={13} /> Calendar</div>
+              <div className="mt-2 text-2xl font-bold">{kpis.upcoming_events_7d}</div>
+              <div className="mt-1 text-[11px] text-muted">events next 7 days</div>
+            </button>
+            <button onClick={() => setView({ kind: "time" })} className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong">
+              <div className="flex items-center gap-2 text-xs text-muted"><Clock size={13} /> Time</div>
+              <div className="mt-2 text-2xl font-bold">{fmtDuration(kpis.time_minutes_7d)}</div>
+              <div className="mt-1 text-[11px] text-muted">logged last 7 days</div>
+            </button>
+            <button onClick={() => setView({ kind: "agents" })} className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong">
+              <div className="flex items-center gap-2 text-xs text-muted"><Bot size={13} /> AI employees</div>
+              <div className="mt-2 text-2xl font-bold">{kpis.agents_total}</div>
+              <div className="mt-1 text-[11px] text-muted">{kpis.agents_active} active</div>
+            </button>
+            <button onClick={() => setView({ kind: "kb" })} className="rounded-xl border border-border bg-card p-4 text-left transition hover:border-border-strong">
+              <div className="flex items-center gap-2 text-xs text-muted"><BookOpen size={13} /> Knowledge base</div>
+              <div className="mt-2 text-2xl font-bold">{kpis.kb_published}</div>
+              <div className="mt-1 text-[11px] text-muted">{kpis.forms_total} public form{kpis.forms_total === 1 ? "" : "s"}</div>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* apps grid */}
       <h2 className="mt-8 text-sm font-semibold text-muted">Your apps</h2>
