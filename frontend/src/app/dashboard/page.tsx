@@ -143,6 +143,7 @@ type View =
   | { kind: "assets" }
   | { kind: "subscriptions" }
   | { kind: "bookings" }
+  | { kind: "okrs" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -584,6 +585,14 @@ function SidebarContent({
           label="Bookings"
         />
 
+        {/* OKRs — objectives & key results */}
+        <NavItem
+          active={view.kind === "okrs"}
+          onClick={() => go({ kind: "okrs" })}
+          icon={<Target size={15} />}
+          label="OKRs"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -936,6 +945,7 @@ export default function DashboardPage() {
             {view.kind === "assets" && <AssetsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "subscriptions" && <SubscriptionsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "bookings" && <BookingsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "okrs" && <OKRsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5475,6 +5485,337 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AG: Goals & OKRs ---------------- */
+
+interface KRDef {
+  id: string;
+  goal_id: string;
+  title: string;
+  unit: string;
+  target_value: number;
+  current_value: number;
+  weight: number;
+  completion: number;
+  created_at: string | null;
+}
+interface GoalDef {
+  id: string;
+  title: string;
+  description: string;
+  period: string;
+  owner_id: string | null;
+  status: string;
+  progress: number;
+  key_results: KRDef[];
+  created_at: string | null;
+}
+
+const GOAL_STATUS_STYLE: Record<string, string> = {
+  draft: "bg-background text-muted",
+  active: "bg-accent/10 text-accent",
+  achieved: "bg-success/10 text-success",
+  missed: "bg-danger/10 text-danger",
+  cancelled: "bg-background text-muted",
+};
+
+function OKRsView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [goals, setGoals] = useState<GoalDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fTitle, setFTitle] = useState("");
+  const [fDesc, setFDesc] = useState("");
+  const [fPeriod, setFPeriod] = useState("");
+
+  // KR form (per expanded goal)
+  const [krTitle, setKrTitle] = useState("");
+  const [krTarget, setKrTarget] = useState("");
+  const [krCurrent, setKrCurrent] = useState("");
+  const [krUnit, setKrUnit] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const qs = statusFilter ? `?status=${statusFilter}` : "";
+      const res = await api<{ items: GoalDef[]; total: number }>(`/api/goals${qs}`);
+      setGoals(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function createGoal() {
+    if (!fTitle.trim()) {
+      toast("Enter a goal title", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/goals", {
+        method: "POST",
+        body: { title: fTitle.trim(), description: fDesc, period: fPeriod.trim() },
+      });
+      toast("Goal created", "success");
+      setShowForm(false);
+      setFTitle(""); setFDesc(""); setFPeriod("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function addKR(g: GoalDef) {
+    if (!krTitle.trim()) {
+      toast("Enter a key result title", "error");
+      return;
+    }
+    setBusy(g.id);
+    try {
+      await api(`/api/goals/${g.id}/key-results`, {
+        method: "POST",
+        body: {
+          title: krTitle.trim(), unit: krUnit.trim(),
+          target_value: Math.max(0.01, parseFloat(krTarget) || 100),
+          current_value: Math.max(0, parseFloat(krCurrent) || 0),
+        },
+      });
+      toast("Key result added", "success");
+      setKrTitle(""); setKrTarget(""); setKrCurrent(""); setKrUnit("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Add failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function updateKR(g: GoalDef, kr: KRDef, value: number) {
+    setBusy(kr.id);
+    try {
+      await api(`/api/goals/key-results/${kr.id}`, { method: "PATCH", body: { current_value: value } });
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Update failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function goalAction(g: GoalDef, act: "activate" | "achieve" | "miss" | "cancel") {
+    setBusy(g.id);
+    try {
+      await api(`/api/goals/${g.id}/${act}`, { method: "POST", body: {} });
+      toast(`Goal ${act === "achieve" ? "achieved" : act === "miss" ? "marked missed" : act + (act === "activate" ? "d" : "led")}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeGoal(g: GoalDef) {
+    setBusy(g.id);
+    try {
+      await api(`/api/goals/${g.id}`, { method: "DELETE" });
+      toast(`Deleted ${g.title}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Goals & OKRs</h1>
+          <p className="mt-0.5 text-xs text-muted">Track objectives with weighted key results and live progress rollup.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New goal"}
+          </button>
+        )}
+      </div>
+
+      {/* status filter */}
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        {["", "draft", "active", "achieved", "missed", "cancelled"].map((st) => (
+          <button key={st} onClick={() => setStatusFilter(st)}
+            className={`rounded-md px-2.5 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+            {st || "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New goal</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted md:col-span-2">
+              Title
+              <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Grow revenue"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Description
+              <textarea value={fDesc} onChange={(e) => setFDesc(e.target.value)} rows={2} placeholder="What does success look like?"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Period
+              <input value={fPeriod} onChange={(e) => setFPeriod(e.target.value)} placeholder="2026-Q3"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createGoal} disabled={busy === "create" || !fTitle.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create" ? "Creating…" : "Create goal"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* goal list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-20 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {goals.map((g) => (
+            <div key={g.id} className="rounded-xl border border-border bg-card">
+              <div className="px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <button onClick={() => setExpanded(expanded === g.id ? null : g.id)} className="flex min-w-0 items-center gap-3 text-left">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold">{g.title}</span>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${GOAL_STATUS_STYLE[g.status] ?? "bg-background text-muted"}`}>{g.status}</span>
+                        {g.period && <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">{g.period}</span>}
+                      </div>
+                      {g.description && <div className="mt-0.5 text-xs text-muted">{g.description}</div>}
+                    </div>
+                  </button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {canEdit && g.status === "draft" && (
+                      <>
+                        <button onClick={() => goalAction(g, "activate")} disabled={busy === g.id || g.key_results.length === 0}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent disabled:opacity-50">Activate</button>
+                        <button onClick={() => goalAction(g, "cancel")} disabled={busy === g.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                      </>
+                    )}
+                    {canEdit && g.status === "active" && (
+                      <>
+                        <button onClick={() => goalAction(g, "achieve")} disabled={busy === g.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Achieve</button>
+                        <button onClick={() => goalAction(g, "miss")} disabled={busy === g.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Miss</button>
+                        <button onClick={() => goalAction(g, "cancel")} disabled={busy === g.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                      </>
+                    )}
+                    {isAdmin && (
+                      <button onClick={() => removeGoal(g)} disabled={busy === g.id}
+                        className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                    )}
+                  </div>
+                </div>
+                {/* progress bar */}
+                <div className="mt-3">
+                  <div className="flex items-center justify-between text-[10px] text-muted">
+                    <span>Progress</span>
+                    <span className="font-semibold text-foreground">{g.progress}%</span>
+                  </div>
+                  <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-background">
+                    <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.min(g.progress, 100)}%` }} />
+                  </div>
+                </div>
+              </div>
+              {/* expanded: key results */}
+              {expanded === g.id && (
+                <div className="border-t border-border px-4 py-3">
+                  <div className="text-xs font-semibold text-muted">Key results</div>
+                  <div className="mt-2 space-y-2">
+                    {g.key_results.map((kr) => (
+                      <div key={kr.id} className="rounded-lg bg-background px-3 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-medium">{kr.title}</span>
+                          <span className="text-[10px] text-muted">{kr.completion}% · weight {kr.weight}</span>
+                        </div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-card">
+                            <div className="h-full rounded-full bg-success transition-all" style={{ width: `${Math.min(kr.completion, 100)}%` }} />
+                          </div>
+                          <span className="text-[10px] text-muted">{kr.current_value}/{kr.target_value}{kr.unit && ` ${kr.unit}`}</span>
+                          {canEdit && (g.status === "draft" || g.status === "active") && (
+                            <input
+                              type="number" min={0} step="any" placeholder="update"
+                              className="w-20 rounded border border-border bg-card px-2 py-0.5 text-[10px] text-foreground outline-none focus:border-accent"
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  const v = parseFloat((e.target as HTMLInputElement).value);
+                                  if (!Number.isNaN(v)) updateKR(g, kr, v);
+                                }
+                              }}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {g.key_results.length === 0 && <p className="text-xs text-muted">No key results yet. Add one to activate this goal.</p>}
+                  </div>
+                  {/* add KR */}
+                  {canEdit && (g.status === "draft" || g.status === "active") && (
+                    <div className="mt-3 grid gap-2 md:grid-cols-4">
+                      <input value={krTitle} onChange={(e) => setKrTitle(e.target.value)} placeholder="Key result title"
+                        className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent md:col-span-2" />
+                      <input type="number" min={0} step="any" value={krTarget} onChange={(e) => setKrTarget(e.target.value)} placeholder="Target"
+                        className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent" />
+                      <div className="flex items-center gap-2">
+                        <input type="number" min={0} step="any" value={krCurrent} onChange={(e) => setKrCurrent(e.target.value)} placeholder="Current"
+                          className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent" />
+                        <button onClick={() => addKR(g)} disabled={busy === g.id || !krTitle.trim()}
+                          className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">Add</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          {goals.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No goals yet. Create one to start tracking objectives.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
