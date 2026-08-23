@@ -51,6 +51,7 @@ SUITES = [
     "calendar_smoke_test.py",
     "kb_smoke_test.py",
     "time_smoke_test.py",
+    "expenses_smoke_test.py",
 ]
 
 

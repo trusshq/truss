@@ -41,6 +41,7 @@ import {
   Pencil,
   Plug,
   Puzzle,
+  Receipt,
   RotateCcw,
   Search,
   Send,
@@ -120,6 +121,7 @@ type View =
   | { kind: "calendar" }
   | { kind: "kb" }
   | { kind: "time" }
+  | { kind: "expenses" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -455,6 +457,14 @@ function SidebarContent({
           onClick={() => go({ kind: "time" })}
           icon={<Clock size={15} />}
           label="Time Tracking"
+        />
+
+        {/* Expenses — standalone */}
+        <NavItem
+          active={view.kind === "expenses"}
+          onClick={() => go({ kind: "expenses" })}
+          icon={<Receipt size={15} />}
+          label="Expenses"
         />
 
         {/* Automations — automations, connectors, events */}
@@ -796,6 +806,7 @@ export default function DashboardPage() {
             {view.kind === "calendar" && <CalendarView canEdit={me.role !== "viewer"} />}
             {view.kind === "kb" && <KBView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "time" && <TimeView canEdit={me.role !== "viewer"} />}
+            {view.kind === "expenses" && <ExpensesView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5277,6 +5288,339 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase S: Expenses ---------------- */
+
+interface ExpenseDef {
+  id: string;
+  title: string;
+  category: string;
+  amount_cents: number;
+  currency: string;
+  occurred_on: string;
+  notes: string;
+  status: string;
+  submitted_by: string | null;
+  receipt_file_id: string | null;
+  reviewed_by: string | null;
+  review_note: string;
+  reviewed_at: string | null;
+  created_at: string;
+}
+interface ExpenseSummary {
+  total_cents: number;
+  count: number;
+  by_status: { label: string; cents: number }[];
+  by_category: { label: string; cents: number }[];
+}
+
+const EXPENSE_CATEGORIES = ["General", "Travel", "Meals", "Software", "Equipment", "Office", "Marketing", "Other"];
+
+function fmtMoney(cents: number, currency = "USD") {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(cents / 100);
+}
+
+const EXPENSE_STATUS_STYLE: Record<string, string> = {
+  draft: "bg-background text-muted",
+  submitted: "bg-warning/10 text-warning",
+  approved: "bg-success/10 text-success",
+  rejected: "bg-danger/10 text-danger",
+  reimbursed: "bg-accent/10 text-accent",
+};
+
+function ExpensesView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [expenses, setExpenses] = useState<ExpenseDef[]>([]);
+  const [summary, setSummary] = useState<ExpenseSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("");
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fTitle, setFTitle] = useState("");
+  const [fCategory, setFCategory] = useState("General");
+  const [fAmount, setFAmount] = useState("");
+  const [fCurrency, setFCurrency] = useState("USD");
+  const [fDate, setFDate] = useState("");
+  const [fNotes, setFNotes] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter) params.set("status", statusFilter);
+      if (categoryFilter) params.set("category", categoryFilter);
+      const qs = params.toString();
+      const [e, s] = await Promise.all([
+        api<{ items: ExpenseDef[] }>(`/api/expenses${qs ? `?${qs}` : ""}`),
+        api<ExpenseSummary>("/api/expenses/summary"),
+      ]);
+      setExpenses(e.items);
+      setSummary(s);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter, categoryFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function create() {
+    const cents = Math.round(parseFloat(fAmount || "0") * 100);
+    if (!fTitle.trim() || !Number.isFinite(cents) || cents < 0) {
+      toast("Enter a title and a valid amount", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/expenses", {
+        method: "POST",
+        body: {
+          title: fTitle.trim(),
+          category: fCategory,
+          amount_cents: cents,
+          currency: fCurrency,
+          occurred_on: fDate,
+          notes: fNotes,
+        },
+      });
+      toast(`Expense "${fTitle.trim()}" created`, "success");
+      setShowForm(false);
+      setFTitle(""); setFAmount(""); setFDate(""); setFNotes("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function action(id: string, verb: "submit" | "approve" | "reject" | "reimburse") {
+    setBusy(id);
+    try {
+      const body = verb === "approve" || verb === "reject" ? { note: "" } : undefined;
+      await api(`/api/expenses/${id}/${verb}`, { method: "POST", body });
+      toast(`Expense ${verb === "approve" ? "approved" : verb === "reject" ? "rejected" : verb === "reimburse" ? "reimbursed" : "submitted"}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : `${verb} failed`, "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function remove(e: ExpenseDef) {
+    setBusy(e.id);
+    try {
+      await api(`/api/expenses/${e.id}`, { method: "DELETE" });
+      toast(`Deleted "${e.title}"`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Expenses</h1>
+          <p className="mt-0.5 text-xs text-muted">Track spend, submit for approval, and reimburse.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New expense"}
+          </button>
+        )}
+      </div>
+
+      {/* summary */}
+      {summary && (
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="text-xs text-muted">Total</div>
+            <div className="mt-1 text-2xl font-bold">{fmtMoney(summary.total_cents)}</div>
+            <div className="mt-0.5 text-xs text-muted">{summary.count} expense{summary.count === 1 ? "" : "s"}</div>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="text-xs text-muted">By status</div>
+            <div className="mt-2 space-y-1">
+              {summary.by_status.slice(0, 4).map((r) => (
+                <div key={r.label} className="flex items-center justify-between text-xs">
+                  <span className="capitalize text-muted">{r.label}</span>
+                  <span className="font-mono">{fmtMoney(r.cents)}</span>
+                </div>
+              ))}
+              {summary.by_status.length === 0 && <div className="text-xs text-faint">No data</div>}
+            </div>
+          </div>
+          <div className="rounded-xl border border-border bg-card p-4">
+            <div className="text-xs text-muted">By category</div>
+            <div className="mt-2 space-y-1">
+              {summary.by_category.slice(0, 4).map((r) => (
+                <div key={r.label} className="flex items-center justify-between text-xs">
+                  <span className="text-muted">{r.label}</span>
+                  <span className="font-mono">{fmtMoney(r.cents)}</span>
+                </div>
+              ))}
+              {summary.by_category.length === 0 && <div className="text-xs text-faint">No data</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New expense</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-muted md:col-span-2">
+              Title
+              <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Flight to client"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Category
+              <select value={fCategory} onChange={(e) => setFCategory(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Amount
+              <input value={fAmount} onChange={(e) => setFAmount(e.target.value)} placeholder="450.00" inputMode="decimal"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Currency
+              <select value={fCurrency} onChange={(e) => setFCurrency(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="USD">USD</option>
+                <option value="EUR">EUR</option>
+                <option value="GBP">GBP</option>
+                <option value="INR">INR</option>
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Date
+              <input type="date" value={fDate} onChange={(e) => setFDate(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-3">
+              Notes
+              <input value={fNotes} onChange={(e) => setFNotes(e.target.value)} placeholder="Optional details"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button onClick={create} disabled={busy === "create" || !fTitle.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create" ? "Creating…" : "Create draft"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+          className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+          <option value="">All statuses</option>
+          <option value="draft">Draft</option>
+          <option value="submitted">Submitted</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+          <option value="reimbursed">Reimbursed</option>
+        </select>
+        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}
+          className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+          <option value="">All categories</option>
+          {EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+
+      {/* list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {expenses.map((e) => (
+            <div key={e.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-background text-muted">
+                  <Receipt size={16} />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold">{e.title}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${EXPENSE_STATUS_STYLE[e.status] ?? "bg-background text-muted"}`}>
+                      {e.status}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    {e.category}
+                    {e.occurred_on && <span> · {e.occurred_on}</span>}
+                    {e.notes && <span> · {e.notes}</span>}
+                    {e.review_note && <span> · review: {e.review_note}</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="font-mono text-sm font-semibold">{fmtMoney(e.amount_cents, e.currency)}</span>
+                {canEdit && (e.status === "draft" || e.status === "rejected") && (
+                  <button onClick={() => action(e.id, "submit")} disabled={busy === e.id}
+                    className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground disabled:opacity-50">
+                    Submit
+                  </button>
+                )}
+                {isAdmin && e.status === "submitted" && (
+                  <>
+                    <button onClick={() => action(e.id, "approve")} disabled={busy === e.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">
+                      Approve
+                    </button>
+                    <button onClick={() => action(e.id, "reject")} disabled={busy === e.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">
+                      Reject
+                    </button>
+                  </>
+                )}
+                {isAdmin && e.status === "approved" && (
+                  <button onClick={() => action(e.id, "reimburse")} disabled={busy === e.id}
+                    className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent disabled:opacity-50">
+                    Reimburse
+                  </button>
+                )}
+                {canEdit && (e.status === "draft" || e.status === "rejected") && (
+                  <button onClick={() => remove(e)} disabled={busy === e.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          {expenses.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No expenses yet. Add one to start tracking spend.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

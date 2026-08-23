@@ -15,7 +15,7 @@ from truss_kernel.events import bus
 from truss_kernel.migrate import run_migrations
 from truss_kernel.models.base import Base
 from truss_kernel.plugins.registry import registry
-from truss_kernel.routes import agents, ai, apikeys, audit, auth, automations, billing, calendar, connectors, dev, events, files, forms, insights, kb, marketplace, objects, orchestration, org, plugins, records, reports, search, time, workspace
+from truss_kernel.routes import agents, ai, apikeys, audit, auth, automations, billing, calendar, connectors, dev, events, expenses, files, forms, insights, kb, marketplace, objects, orchestration, org, plugins, records, reports, search, time, workspace
 from truss_kernel.services import reports as reports_svc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -99,6 +99,7 @@ app.include_router(calendar.router)
 app.include_router(kb.router)
 app.include_router(kb.public_router)
 app.include_router(time.router)
+app.include_router(expenses.router)
 
 
 @app.get("/api/health", tags=["meta"])
