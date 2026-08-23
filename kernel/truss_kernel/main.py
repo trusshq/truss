@@ -1,4 +1,5 @@
 """Truss Kernel — FastAPI application entrypoint."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -14,10 +15,21 @@ from truss_kernel.events import bus
 from truss_kernel.migrate import run_migrations
 from truss_kernel.models.base import Base
 from truss_kernel.plugins.registry import registry
-from truss_kernel.routes import agents, ai, apikeys, audit, auth, automations, billing, connectors, dev, events, insights, marketplace, objects, orchestration, org, plugins, records, search, workspace
+from truss_kernel.routes import agents, ai, apikeys, audit, auth, automations, billing, connectors, dev, events, insights, marketplace, objects, orchestration, org, plugins, records, reports, search, workspace
+from truss_kernel.services import reports as reports_svc
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("truss")
+
+
+async def _report_scheduler_loop() -> None:
+    """Fire due cron-scheduled reports on the same cadence as the orchestration tick."""
+    while True:
+        try:
+            await reports_svc.tick_due_reports()
+        except Exception:  # noqa: BLE001 - the loop must survive any single tick failure
+            logger.exception("report scheduler tick failed")
+        await asyncio.sleep(30)
 
 
 @asynccontextmanager
@@ -31,9 +43,15 @@ async def lifespan(app: FastAPI):
     bus.subscribe("*", webhook_adapter.on_event)
     bus.subscribe("*", orchestration_engine.handle_trigger_event)
     await orchestration_engine.scheduler.start()
+    report_scheduler = asyncio.create_task(_report_scheduler_loop())
     logger.info("Truss kernel up. %d plugin(s) discovered: %s",
                 len(found), ", ".join(sorted(found)))
     yield
+    report_scheduler.cancel()
+    try:
+        await report_scheduler
+    except asyncio.CancelledError:
+        pass
     await orchestration_engine.scheduler.stop()
     await engine.dispose()
 
@@ -73,6 +91,7 @@ app.include_router(workspace.router)
 app.include_router(search.router)
 app.include_router(audit.router)
 app.include_router(billing.router)
+app.include_router(reports.router)
 
 
 @app.get("/api/health", tags=["meta"])

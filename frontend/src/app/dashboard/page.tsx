@@ -20,6 +20,7 @@ import {
   Copy,
   Database,
   Download,
+  FileText,
   History,
   Home,
   Inbox,
@@ -109,6 +110,7 @@ type View =
   | { kind: "review" }
   | { kind: "autopilot" }
   | { kind: "insights" }
+  | { kind: "reports" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -396,6 +398,14 @@ function SidebarContent({
           onClick={() => go({ kind: "insights" })}
           icon={<BarChart3 size={15} />}
           label="Insights"
+        />
+
+        {/* Reports — standalone */}
+        <NavItem
+          active={view.kind === "reports"}
+          onClick={() => go({ kind: "reports" })}
+          icon={<FileText size={15} />}
+          label="Reports"
         />
 
         {/* Automations — automations, connectors, events */}
@@ -731,6 +741,7 @@ export default function DashboardPage() {
             {view.kind === "settings" && <SettingsView />}
             {view.kind === "workspace" && <WorkspaceView me={me} onMeChanged={refresh} />}
             {view.kind === "billing" && <BillingView isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "reports" && <ReportsView canEdit={me.role !== "viewer"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5212,6 +5223,293 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase M: Saved Reports ---------------- */
+
+interface ReportDef {
+  id: string;
+  name: string;
+  description: string;
+  query: { object: string; metric: string; field?: string; value_field?: string; bucket?: string; days?: number; limit?: number };
+  cron: string;
+  next_run_at: string | null;
+  created_at: string;
+}
+interface ReportRunRow {
+  id: string;
+  status: string;
+  trigger: string;
+  result: Record<string, unknown>;
+  error: string | null;
+  created_at: string;
+}
+
+const METRICS = ["count", "group_by", "sum", "avg", "min", "max", "summary", "time_series"];
+
+function ReportsView({ canEdit }: { canEdit: boolean }) {
+  const [reports, setReports] = useState<ReportDef[]>([]);
+  const [objects, setObjects] = useState<{ slug: string; name: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [runs, setRuns] = useState<Record<string, ReportRunRow[]>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fName, setFName] = useState("");
+  const [fObject, setFObject] = useState("");
+  const [fMetric, setFMetric] = useState("count");
+  const [fField, setFField] = useState("");
+  const [fCron, setFCron] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [r, o] = await Promise.all([
+        api<{ items: ReportDef[] }>("/api/reports"),
+        api<{ slug: string; name: string }[]>("/api/objects"),
+      ]);
+      setReports(r.items);
+      setObjects(o);
+      if (!fObject && o.length) setFObject(o[0].slug);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [fObject]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function createReport() {
+    if (!fName.trim() || !fObject) return;
+    setBusy("create");
+    try {
+      const query: ReportDef["query"] = { object: fObject, metric: fMetric };
+      if (fField.trim()) query.field = fField.trim();
+      await api("/api/reports", { method: "POST", body: { name: fName.trim(), query, cron: fCron.trim() } });
+      toast(`Report "${fName.trim()}" created`, "success");
+      setShowForm(false);
+      setFName("");
+      setFField("");
+      setFCron("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runReport(id: string) {
+    setBusy(id);
+    try {
+      const run = await api<ReportRunRow>(`/api/reports/${id}/run`, { method: "POST" });
+      toast(run.status === "ok" ? "Report ran" : `Report error: ${run.error}`, run.status === "ok" ? "success" : "error");
+      await loadRuns(id);
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Run failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function loadRuns(id: string) {
+    try {
+      const res = await api<{ items: ReportRunRow[] }>(`/api/reports/${id}/runs`);
+      setRuns((prev) => ({ ...prev, [id]: res.items }));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function deleteReport(id: string, name: string) {
+    setBusy(id);
+    try {
+      await api(`/api/reports/${id}`, { method: "DELETE" });
+      toast(`Deleted "${name}"`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function toggleExpand(id: string) {
+    const next = expanded === id ? null : id;
+    setExpanded(next);
+    if (next) loadRuns(id);
+  }
+
+  function describeQuery(q: ReportDef["query"]) {
+    const parts = [q.metric, "on", q.object];
+    if (q.field) parts.push(`(${q.field})`);
+    return parts.join(" ");
+  }
+
+  function renderResult(result: Record<string, unknown>) {
+    if ("value" in result) return <span className="font-mono text-lg font-bold">{String(result.value)}</span>;
+    if ("rows" in result && Array.isArray(result.rows)) {
+      const rows = result.rows as { label?: string; value?: number; count?: number }[];
+      const max = Math.max(...rows.map((r) => r.value ?? r.count ?? 0), 1);
+      return (
+        <div className="space-y-1.5">
+          {rows.map((r, i) => {
+            const v = r.value ?? r.count ?? 0;
+            return (
+              <div key={i} className="flex items-center gap-2 text-xs">
+                <span className="w-28 truncate text-muted">{r.label ?? "—"}</span>
+                <div className="h-2 flex-1 overflow-hidden rounded-full bg-background">
+                  <div className="h-full rounded-full bg-accent" style={{ width: `${Math.round((v / max) * 100)}%` }} />
+                </div>
+                <span className="w-14 text-right font-mono">{v}</span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+    return <pre className="overflow-x-auto rounded-lg bg-background p-2 text-[11px] text-muted">{JSON.stringify(result, null, 2)}</pre>;
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Reports</h1>
+          <p className="mt-0.5 text-xs text-muted">Saved analytics queries. Run on demand or on a cron schedule — every run is snapshotted.</p>
+        </div>
+        {canEdit && (
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
+          >
+            {showForm ? "Cancel" : "+ New report"}
+          </button>
+        )}
+      </div>
+
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New report</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Name
+              <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="Weekly lead count"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Object
+              <select value={fObject} onChange={(e) => setFObject(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                {objects.map((o) => <option key={o.slug} value={o.slug}>{o.name} ({o.slug})</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Metric
+              <select value={fMetric} onChange={(e) => setFMetric(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                {METRICS.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Field <span className="text-faint">(for group_by / sum / avg / …)</span>
+              <input value={fField} onChange={(e) => setFField(e.target.value)} placeholder="source"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Schedule <span className="text-faint">(optional 5-field cron, e.g. &quot;0 9 * * 1&quot; = Mondays 9am)</span>
+              <input value={fCron} onChange={(e) => setFCron(e.target.value)} placeholder="0 9 * * 1"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 font-mono text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <button
+            onClick={createReport}
+            disabled={busy === "create" || !fName.trim() || !fObject}
+            className="mt-3 rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50"
+          >
+            {busy === "create" ? "Creating…" : "Create report"}
+          </button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-20 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {reports.map((r) => (
+            <div key={r.id} className="rounded-xl border border-border bg-card">
+              <div className="flex items-center justify-between gap-3 px-4 py-3">
+                <button onClick={() => toggleExpand(r.id)} className="min-w-0 flex-1 text-left">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">{r.name}</span>
+                    {r.cron && <span className="rounded-full bg-accent-soft px-2 py-0.5 font-mono text-[10px] text-accent">⏱ {r.cron}</span>}
+                  </div>
+                  <div className="mt-0.5 truncate text-xs text-muted">
+                    {describeQuery(r.query)}
+                    {r.next_run_at && <span> · next run {new Date(r.next_run_at).toLocaleString()}</span>}
+                  </div>
+                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    onClick={() => runReport(r.id)}
+                    disabled={busy === r.id}
+                    className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground disabled:opacity-50"
+                  >
+                    {busy === r.id ? "Running…" : "Run"}
+                  </button>
+                  {canEdit && (
+                    <button
+                      onClick={() => deleteReport(r.id, r.name)}
+                      disabled={busy === r.id}
+                      className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                  <span className="text-faint">{expanded === r.id ? "▾" : "▸"}</span>
+                </div>
+              </div>
+              {expanded === r.id && (
+                <div className="border-t border-border px-4 py-3">
+                  <h3 className="text-xs font-semibold text-muted">Run history</h3>
+                  <div className="mt-2 space-y-3">
+                    {(runs[r.id] ?? []).slice(0, 5).map((run) => (
+                      <div key={run.id} className="rounded-lg border border-border bg-background p-3">
+                        <div className="flex items-center justify-between text-[11px] text-muted">
+                          <span>
+                            <span className={`mr-2 rounded-full px-2 py-0.5 text-[10px] ${run.status === "ok" ? "bg-success/10 text-success" : "bg-danger/10 text-danger"}`}>{run.status}</span>
+                            {run.trigger} · {new Date(run.created_at).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="mt-2">
+                          {run.status === "ok" ? renderResult(run.result) : <span className="text-xs text-danger">{run.error}</span>}
+                        </div>
+                      </div>
+                    ))}
+                    {(runs[r.id] ?? []).length === 0 && (
+                      <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted">No runs yet — hit Run.</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          {reports.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No saved reports yet. Create one to snapshot an analytics query on demand or on a schedule.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
