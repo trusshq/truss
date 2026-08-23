@@ -38,6 +38,7 @@ import {
   Moon,
   Network,
   Palette,
+  Package,
   Paperclip,
   Pencil,
   Plug,
@@ -124,6 +125,7 @@ type View =
   | { kind: "time" }
   | { kind: "expenses" }
   | { kind: "projects" }
+  | { kind: "inventory" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -477,6 +479,14 @@ function SidebarContent({
           label="Projects"
         />
 
+        {/* Inventory — standalone */}
+        <NavItem
+          active={view.kind === "inventory"}
+          onClick={() => go({ kind: "inventory" })}
+          icon={<Package size={15} />}
+          label="Inventory"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -818,6 +828,7 @@ export default function DashboardPage() {
             {view.kind === "time" && <TimeView canEdit={me.role !== "viewer"} />}
             {view.kind === "expenses" && <ExpensesView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "projects" && <ProjectsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "inventory" && <InventoryView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5299,6 +5310,298 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase U: Inventory ---------------- */
+
+interface ProductDef {
+  id: string;
+  name: string;
+  sku: string;
+  description: string;
+  category: string;
+  price_cents: number;
+  currency: string;
+  quantity: number;
+  reorder_point: number;
+  low_stock: boolean;
+  active: boolean;
+  created_at: string;
+}
+
+function InventoryView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [products, setProducts] = useState<ProductDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [lowOnly, setLowOnly] = useState(false);
+  const [search, setSearch] = useState("");
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fName, setFName] = useState("");
+  const [fSku, setFSku] = useState("");
+  const [fCategory, setFCategory] = useState("General");
+  const [fPrice, setFPrice] = useState("");
+  const [fQty, setFQty] = useState("");
+  const [fReorder, setFReorder] = useState("");
+
+  // adjust form
+  const [adjusting, setAdjusting] = useState<ProductDef | null>(null);
+  const [adjKind, setAdjKind] = useState<"in" | "out" | "set">("in");
+  const [adjDelta, setAdjDelta] = useState("");
+  const [adjReason, setAdjReason] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (lowOnly) params.set("low_stock", "true");
+      if (search.trim()) params.set("q", search.trim());
+      const qs = params.toString();
+      const res = await api<{ items: ProductDef[] }>(`/api/inventory/products${qs ? `?${qs}` : ""}`);
+      setProducts(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [lowOnly, search]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function create() {
+    const price = Math.round(parseFloat(fPrice || "0") * 100);
+    const qty = parseInt(fQty || "0", 10);
+    const reorder = parseInt(fReorder || "0", 10);
+    if (!fName.trim() || !fSku.trim() || !Number.isFinite(price) || price < 0 || !Number.isFinite(qty) || qty < 0) {
+      toast("Enter a name, SKU, and valid price/quantity", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/inventory/products", {
+        method: "POST",
+        body: { name: fName.trim(), sku: fSku.trim(), category: fCategory, price_cents: price, quantity: qty, reorder_point: reorder },
+      });
+      toast(`Product "${fName.trim()}" created`, "success");
+      setShowForm(false);
+      setFName(""); setFSku(""); setFPrice(""); setFQty(""); setFReorder("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function adjust() {
+    if (!adjusting) return;
+    const delta = parseInt(adjDelta || "0", 10);
+    if (!Number.isFinite(delta)) {
+      toast("Enter a valid quantity", "error");
+      return;
+    }
+    setBusy("adjust");
+    try {
+      await api(`/api/inventory/products/${adjusting.id}/adjust`, {
+        method: "POST",
+        body: { kind: adjKind, delta, reason: adjReason },
+      });
+      toast(`Stock ${adjKind === "in" ? "received" : adjKind === "out" ? "removed" : "set"}`, "success");
+      setAdjusting(null);
+      setAdjDelta(""); setAdjReason("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Adjust failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function remove(p: ProductDef) {
+    setBusy(p.id);
+    try {
+      await api(`/api/inventory/products/${p.id}`, { method: "DELETE" });
+      toast(`Deleted "${p.name}"`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const lowCount = products.filter((p) => p.low_stock).length;
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Inventory</h1>
+          <p className="mt-0.5 text-xs text-muted">Track products, stock levels, and adjustments.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New product"}
+          </button>
+        )}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New product</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-muted">
+              Name
+              <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="Wireless Mouse"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              SKU
+              <input value={fSku} onChange={(e) => setFSku(e.target.value)} placeholder="WM-001"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 font-mono text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Category
+              <input value={fCategory} onChange={(e) => setFCategory(e.target.value)} placeholder="Electronics"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Price (USD)
+              <input value={fPrice} onChange={(e) => setFPrice(e.target.value)} placeholder="25.00" inputMode="decimal"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Initial quantity
+              <input value={fQty} onChange={(e) => setFQty(e.target.value)} placeholder="50" inputMode="numeric"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Reorder point
+              <input value={fReorder} onChange={(e) => setFReorder(e.target.value)} placeholder="10" inputMode="numeric"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button onClick={create} disabled={busy === "create" || !fName.trim() || !fSku.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create" ? "Creating…" : "Create product"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* adjust panel */}
+      {adjusting && canEdit && (
+        <div className="rounded-xl border border-accent/40 bg-card p-4">
+          <div className="flex items-start justify-between gap-3">
+            <h2 className="text-sm font-semibold">Adjust stock: {adjusting.name} <span className="font-mono text-xs text-muted">({adjusting.sku})</span></h2>
+            <button onClick={() => setAdjusting(null)} className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground">
+              Close
+            </button>
+          </div>
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <label className="text-xs text-muted">
+              Type
+              <select value={adjKind} onChange={(e) => setAdjKind(e.target.value as "in" | "out" | "set")}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="in">Receive (in)</option>
+                <option value="out">Ship / consume (out)</option>
+                <option value="set">Set absolute</option>
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Quantity
+              <input value={adjDelta} onChange={(e) => setAdjDelta(e.target.value)} placeholder="10" inputMode="numeric"
+                className="mt-1 w-28 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="min-w-0 flex-1 text-xs text-muted">
+              Reason
+              <input value={adjReason} onChange={(e) => setAdjReason(e.target.value)} placeholder="restock, order #123…"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <button onClick={adjust} disabled={busy === "adjust" || !adjDelta.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "adjust" ? "Applying…" : "Apply"}
+            </button>
+          </div>
+          <div className="mt-2 text-xs text-muted">Current stock: <span className="font-mono font-semibold text-foreground">{adjusting.quantity}</span></div>
+        </div>
+      )}
+
+      {/* filters */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search name or SKU…"
+          className="w-56 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+        <button onClick={() => setLowOnly((v) => !v)}
+          className={`rounded-lg border px-3 py-1.5 text-sm transition ${lowOnly ? "border-warning bg-warning/10 text-warning" : "border-border text-muted hover:text-foreground"}`}>
+          Low stock{lowCount > 0 ? ` (${lowCount})` : ""}
+        </button>
+      </div>
+
+      {/* list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {products.map((p) => (
+            <div key={p.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${p.low_stock ? "bg-warning/10 text-warning" : "bg-background text-muted"}`}>
+                  <Package size={16} />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold">{p.name}</span>
+                    <span className="font-mono text-xs text-muted">{p.sku}</span>
+                    {p.low_stock && (
+                      <span className="rounded-full bg-warning/10 px-2 py-0.5 text-[10px] text-warning">low stock</span>
+                    )}
+                    {!p.active && (
+                      <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">inactive</span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    {p.category} · {fmtMoney(p.price_cents, p.currency)} · reorder at {p.reorder_point}
+                  </div>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-3">
+                <span className={`font-mono text-sm font-semibold ${p.low_stock ? "text-warning" : "text-foreground"}`}>
+                  {p.quantity} in stock
+                </span>
+                {canEdit && (
+                  <button onClick={() => { setAdjusting(p); setAdjKind("in"); setAdjDelta(""); setAdjReason(""); }} disabled={busy === p.id}
+                    className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground disabled:opacity-50">
+                    Adjust
+                  </button>
+                )}
+                {isAdmin && (
+                  <button onClick={() => remove(p)} disabled={busy === p.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          {products.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No products yet. Add one to start tracking inventory.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
