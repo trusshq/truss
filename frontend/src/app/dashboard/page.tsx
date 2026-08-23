@@ -48,6 +48,7 @@ import {
   Plug,
   Puzzle,
   Receipt,
+  Repeat,
   RotateCcw,
   Search,
   Send,
@@ -139,6 +140,7 @@ type View =
   | { kind: "tickets" }
   | { kind: "campaigns" }
   | { kind: "assets" }
+  | { kind: "subscriptions" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -564,6 +566,14 @@ function SidebarContent({
           label="Assets"
         />
 
+        {/* Subscriptions — recurring billing & MRR */}
+        <NavItem
+          active={view.kind === "subscriptions"}
+          onClick={() => go({ kind: "subscriptions" })}
+          icon={<Repeat size={15} />}
+          label="Subscriptions"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -914,6 +924,7 @@ export default function DashboardPage() {
             {view.kind === "tickets" && <TicketsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "campaigns" && <CampaignsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "assets" && <AssetsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "subscriptions" && <SubscriptionsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5450,6 +5461,367 @@ function AutomationsView() {
         {runs.length === 0 && (
           <div className="rounded-lg border border-dashed border-border px-4 py-4 text-center text-xs text-muted">
             No runs yet. Trigger one — e.g. set a lead&apos;s status to Converted.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AE: Subscriptions ---------------- */
+
+interface PlanDef {
+  id: string;
+  name: string;
+  description: string;
+  interval: string;
+  price_cents: number;
+  currency: string;
+  active: boolean;
+  created_at: string | null;
+}
+interface SubDef {
+  id: string;
+  plan_id: string;
+  customer: string;
+  status: string;
+  current_period_end: string;
+  cancelled_at: string;
+  created_at: string | null;
+}
+
+const SUB_STATUS_STYLE: Record<string, string> = {
+  active: "bg-success/10 text-success",
+  paused: "bg-warning/10 text-warning",
+  cancelled: "bg-background text-muted",
+};
+
+function SubscriptionsView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [plans, setPlans] = useState<PlanDef[]>([]);
+  const [subs, setSubs] = useState<SubDef[]>([]);
+  const [mrr, setMrr] = useState<{ mrr_cents: number; active_subscriptions: number } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+
+  // plan form
+  const [showPlanForm, setShowPlanForm] = useState(false);
+  const [pName, setPName] = useState("");
+  const [pInterval, setPInterval] = useState("monthly");
+  const [pPrice, setPPrice] = useState("");
+
+  // subscription form
+  const [showSubForm, setShowSubForm] = useState(false);
+  const [sPlan, setSPlan] = useState("");
+  const [sCustomer, setSCustomer] = useState("");
+  const [sPeriodEnd, setSPeriodEnd] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const [plansRes, subsRes, mrrRes] = await Promise.all([
+        api<{ items: PlanDef[] }>("/api/subscriptions/plans"),
+        api<{ items: SubDef[] }>(`/api/subscriptions${statusFilter ? `?status=${statusFilter}` : ""}`),
+        api<{ mrr_cents: number; active_subscriptions: number }>("/api/subscriptions/mrr"),
+      ]);
+      setPlans(plansRes.items);
+      setSubs(subsRes.items);
+      setMrr(mrrRes);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const planById = (id: string) => plans.find((p) => p.id === id);
+
+  async function createPlan() {
+    if (!pName.trim()) {
+      toast("Enter a plan name", "error");
+      return;
+    }
+    setBusy("create-plan");
+    try {
+      await api("/api/subscriptions/plans", {
+        method: "POST",
+        body: { name: pName.trim(), interval: pInterval, price_cents: Math.max(0, Math.round((parseFloat(pPrice) || 0) * 100)) },
+      });
+      toast("Plan created", "success");
+      setShowPlanForm(false);
+      setPName(""); setPInterval("monthly"); setPPrice("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createSub() {
+    if (!sPlan || !sCustomer.trim()) {
+      toast("Pick a plan and enter a customer", "error");
+      return;
+    }
+    setBusy("create-sub");
+    try {
+      await api("/api/subscriptions", {
+        method: "POST",
+        body: { plan_id: sPlan, customer: sCustomer.trim(), current_period_end: sPeriodEnd },
+      });
+      toast("Subscription created", "success");
+      setShowSubForm(false);
+      setSPlan(""); setSCustomer(""); setSPeriodEnd("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function subAction(sub: SubDef, act: "pause" | "resume" | "cancel" | "reactivate") {
+    setBusy(sub.id);
+    try {
+      await api(`/api/subscriptions/${sub.id}/${act}`, { method: "POST", body: {} });
+      toast(`Subscription ${act === "pause" ? "paused" : act === "resume" ? "resumed" : act === "cancel" ? "cancelled" : "reactivated"}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeSub(sub: SubDef) {
+    setBusy(sub.id);
+    try {
+      await api(`/api/subscriptions/${sub.id}`, { method: "DELETE" });
+      toast(`Deleted subscription for ${sub.customer}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removePlan(plan: PlanDef) {
+    setBusy(plan.id);
+    try {
+      await api(`/api/subscriptions/plans/${plan.id}`, { method: "DELETE" });
+      toast(`Deleted plan ${plan.name}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Subscriptions</h1>
+          <p className="mt-0.5 text-xs text-muted">Recurring billing — plans, customer subscriptions, and MRR.</p>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowPlanForm((v) => !v)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              {showPlanForm ? "Close" : "+ New plan"}
+            </button>
+            <button onClick={() => setShowSubForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+              {showSubForm ? "Close" : "+ New subscription"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* MRR card */}
+      {mrr && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl border border-border bg-card px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wide text-muted">Monthly recurring revenue</div>
+            <div className="mt-1 text-2xl font-bold text-accent">{fmtCents(mrr.mrr_cents)}</div>
+          </div>
+          <div className="rounded-xl border border-border bg-card px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wide text-muted">Active subscriptions</div>
+            <div className="mt-1 text-2xl font-bold">{mrr.active_subscriptions}</div>
+          </div>
+        </div>
+      )}
+
+      {/* plan form */}
+      {showPlanForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New plan</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-muted">
+              Name
+              <input value={pName} onChange={(e) => setPName(e.target.value)} placeholder="Pro"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Interval
+              <select value={pInterval} onChange={(e) => setPInterval(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="monthly">monthly</option>
+                <option value="yearly">yearly</option>
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Price
+              <input type="number" min={0} step="0.01" value={pPrice} onChange={(e) => setPPrice(e.target.value)} placeholder="49.00"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createPlan} disabled={busy === "create-plan" || !pName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-plan" ? "Creating…" : "Create plan"}
+            </button>
+            <button onClick={() => setShowPlanForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* subscription form */}
+      {showSubForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New subscription</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-muted">
+              Plan
+              <select value={sPlan} onChange={(e) => setSPlan(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="">Select a plan…</option>
+                {plans.filter((p) => p.active).map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({fmtCents(p.price_cents)}/{p.interval === "monthly" ? "mo" : "yr"})</option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-muted">
+              Customer
+              <input value={sCustomer} onChange={(e) => setSCustomer(e.target.value)} placeholder="Acme Corp"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Period ends
+              <input type="date" value={sPeriodEnd} onChange={(e) => setSPeriodEnd(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createSub} disabled={busy === "create-sub" || !sPlan || !sCustomer.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-sub" ? "Creating…" : "Create subscription"}
+            </button>
+            <button onClick={() => setShowSubForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* plans */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Plans</h2>
+        {loading ? (
+          <div className="skeleton h-16 w-full rounded-xl" />
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {plans.map((p) => (
+              <div key={p.id} className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">{p.name}</span>
+                    {!p.active && <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">inactive</span>}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">{fmtCents(p.price_cents)} / {p.interval === "monthly" ? "month" : "year"}</div>
+                </div>
+                {isAdmin && (
+                  <button onClick={() => removePlan(p)} disabled={busy === p.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                )}
+              </div>
+            ))}
+            {plans.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted md:col-span-2">
+                No plans yet. Create one to start selling subscriptions.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* subscriptions */}
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">Subscriptions</h2>
+          <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1">
+            {["", "active", "paused", "cancelled"].map((st) => (
+              <button key={st} onClick={() => setStatusFilter(st)}
+                className={`rounded-md px-3 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+                {st || "All"}
+              </button>
+            ))}
+          </div>
+        </div>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="space-y-2">
+            {subs.map((sub) => {
+              const plan = planById(sub.plan_id);
+              return (
+                <div key={sub.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{sub.customer}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${SUB_STATUS_STYLE[sub.status] ?? "bg-background text-muted"}`}>{sub.status}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {plan ? `${plan.name} · ${fmtCents(plan.price_cents)}/${plan.interval === "monthly" ? "mo" : "yr"}` : "unknown plan"}
+                      {sub.current_period_end && <span> · renews {sub.current_period_end}</span>}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {canEdit && sub.status === "active" && (
+                      <>
+                        <button onClick={() => subAction(sub, "pause")} disabled={busy === sub.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-warning disabled:opacity-50">Pause</button>
+                        <button onClick={() => subAction(sub, "cancel")} disabled={busy === sub.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                      </>
+                    )}
+                    {canEdit && sub.status === "paused" && (
+                      <button onClick={() => subAction(sub, "resume")} disabled={busy === sub.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Resume</button>
+                    )}
+                    {canEdit && sub.status === "cancelled" && (
+                      <button onClick={() => subAction(sub, "reactivate")} disabled={busy === sub.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Reactivate</button>
+                    )}
+                    {isAdmin && (
+                      <button onClick={() => removeSub(sub)} disabled={busy === sub.id}
+                        className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {subs.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+                No subscriptions yet. Create one to start tracking recurring revenue.
+              </div>
+            )}
           </div>
         )}
       </div>
