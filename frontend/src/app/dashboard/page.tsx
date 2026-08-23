@@ -12,6 +12,7 @@ import {
   Cable,
   CalendarDays,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -127,6 +128,7 @@ type View =
   | { kind: "projects" }
   | { kind: "inventory" }
   | { kind: "hr" }
+  | { kind: "approvals" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -496,6 +498,14 @@ function SidebarContent({
           label="People"
         />
 
+        {/* Approvals — unified inbox */}
+        <NavItem
+          active={view.kind === "approvals"}
+          onClick={() => go({ kind: "approvals" })}
+          icon={<CheckCircle2 size={15} />}
+          label="Approvals"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -839,6 +849,7 @@ export default function DashboardPage() {
             {view.kind === "projects" && <ProjectsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "inventory" && <InventoryView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "hr" && <HRView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "approvals" && <ApprovalsView isAdmin={me.role === "owner" || me.role === "admin"} setView={setView} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5378,6 +5389,134 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase X: Approvals Center ---------------- */
+
+interface ApprovalItem {
+  kind: "expense" | "leave" | "agent_task";
+  id: string;
+  title: string;
+  detail: string;
+  created_at: string | null;
+  agent_id?: string;
+}
+
+const APPROVAL_KIND_META: Record<string, { label: string; icon: React.ReactNode; view: View }> = {
+  expense: { label: "Expense", icon: <Receipt size={13} />, view: { kind: "expenses" } },
+  leave: { label: "Leave", icon: <Users size={13} />, view: { kind: "hr" } },
+  agent_task: { label: "AI task", icon: <Bot size={13} />, view: { kind: "agents" } },
+};
+
+function ApprovalsView({ isAdmin, setView }: { isAdmin: boolean; setView: (v: View) => void }) {
+  const [items, setItems] = useState<ApprovalItem[]>([]);
+  const [byKind, setByKind] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api<{ items: ApprovalItem[]; total: number; by_kind: Record<string, number> }>("/api/approvals");
+      setItems(res.items);
+      setByKind(res.by_kind);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function act(item: ApprovalItem, action: "approve" | "reject") {
+    setBusy(item.id);
+    try {
+      let path = "";
+      if (item.kind === "expense") path = `/api/expenses/${item.id}/${action}`;
+      else if (item.kind === "leave") path = `/api/hr/leave/${item.id}/${action}`;
+      else if (item.kind === "agent_task") path = `/api/agents/${item.agent_id}/tasks/${item.id}/${action}`;
+      await api(path, { method: "POST", body: {} });
+      toast(`${APPROVAL_KIND_META[item.kind].label} ${action}d`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-6">
+      <div>
+        <h1 className="text-xl font-bold">Approvals</h1>
+        <p className="mt-0.5 text-xs text-muted">
+          Everything waiting on a decision — expenses, leave, and AI tasks in one inbox.
+        </p>
+      </div>
+
+      {/* summary chips */}
+      <div className="flex flex-wrap items-center gap-2">
+        {(["expense", "leave", "agent_task"] as const).map((k) => (
+          <button key={k} onClick={() => setView(APPROVAL_KIND_META[k].view)}
+            className="flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-xs text-muted transition hover:text-foreground">
+            {APPROVAL_KIND_META[k].icon}
+            {APPROVAL_KIND_META[k].label}
+            <span className="font-semibold text-foreground">{byKind[k] ?? 0}</span>
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : items.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border px-4 py-12 text-center">
+          <CheckCircle2 size={28} className="mx-auto text-success" />
+          <p className="mt-2 text-sm font-semibold">All caught up</p>
+          <p className="mt-1 text-xs text-muted">Nothing is waiting for your approval.</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map((item) => {
+            const meta = APPROVAL_KIND_META[item.kind];
+            return (
+              <div key={`${item.kind}-${item.id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent">
+                    {meta.icon}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold">{item.title}</span>
+                      <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">{meta.label}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {item.detail}
+                      {item.created_at && <span> · {new Date(item.created_at).toLocaleString()}</span>}
+                    </div>
+                  </div>
+                </div>
+                {isAdmin && (
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button onClick={() => act(item, "approve")} disabled={busy === item.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">
+                      Approve
+                    </button>
+                    <button onClick={() => act(item, "reject")} disabled={busy === item.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">
+                      Reject
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
