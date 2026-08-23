@@ -111,6 +111,7 @@ type View =
   | { kind: "autopilot" }
   | { kind: "insights" }
   | { kind: "reports" }
+  | { kind: "forms" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -406,6 +407,14 @@ function SidebarContent({
           onClick={() => go({ kind: "reports" })}
           icon={<FileText size={15} />}
           label="Reports"
+        />
+
+        {/* Forms — standalone */}
+        <NavItem
+          active={view.kind === "forms"}
+          onClick={() => go({ kind: "forms" })}
+          icon={<Inbox size={15} />}
+          label="Forms"
         />
 
         {/* Automations — automations, connectors, events */}
@@ -742,6 +751,7 @@ export default function DashboardPage() {
             {view.kind === "workspace" && <WorkspaceView me={me} onMeChanged={refresh} />}
             {view.kind === "billing" && <BillingView isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "reports" && <ReportsView canEdit={me.role !== "viewer"} />}
+            {view.kind === "forms" && <FormsView isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5223,6 +5233,234 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase N: Public Forms ---------------- */
+
+interface FormDef {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  object: string;
+  fields: string[];
+  active: boolean;
+  submissions: number;
+  created_at: string;
+}
+
+function FormsView({ isAdmin }: { isAdmin: boolean }) {
+  const [forms, setForms] = useState<FormDef[]>([]);
+  const [objects, setObjects] = useState<{ slug: string; name: string; fields: { slug: string; name: string; type: string; required: boolean }[] }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // create form state
+  const [showForm, setShowForm] = useState(false);
+  const [fName, setFName] = useState("");
+  const [fSlug, setFSlug] = useState("");
+  const [fObject, setFObject] = useState("");
+  const [fFields, setFFields] = useState<string[]>([]);
+
+  const load = useCallback(async () => {
+    try {
+      const [f, o] = await Promise.all([
+        api<{ items: FormDef[] }>("/api/forms"),
+        api<{ slug: string; name: string; fields: { slug: string; name: string; type: string; required: boolean }[] }[]>("/api/objects"),
+      ]);
+      setForms(f.items);
+      setObjects(o);
+      if (!fObject && o.length) setFObject(o[0].slug);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [fObject]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const selectedObject = objects.find((o) => o.slug === fObject);
+
+  async function createForm() {
+    if (!fName.trim() || !fSlug.trim() || !fObject) return;
+    setBusy("create");
+    try {
+      await api("/api/forms", {
+        method: "POST",
+        body: { slug: fSlug.trim(), name: fName.trim(), object: fObject, fields: fFields },
+      });
+      toast(`Form "${fName.trim()}" created`, "success");
+      setShowForm(false);
+      setFName("");
+      setFSlug("");
+      setFFields([]);
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggleActive(form: FormDef) {
+    setBusy(form.id);
+    try {
+      await api(`/api/forms/${form.id}`, { method: "PATCH", body: { active: !form.active } });
+      toast(form.active ? `Deactivated "${form.name}"` : `Activated "${form.name}"`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Update failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function deleteForm(form: FormDef) {
+    setBusy(form.id);
+    try {
+      await api(`/api/forms/${form.id}`, { method: "DELETE" });
+      toast(`Deleted "${form.name}"`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function copyLink(slug: string) {
+    const url = `${window.location.origin}/forms/${slug}`;
+    navigator.clipboard.writeText(url).then(
+      () => toast("Public link copied", "success"),
+      () => toast(url, "info")
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Forms</h1>
+          <p className="mt-0.5 text-xs text-muted">Public intake forms. Share a link — submissions become real records and fire your automations.</p>
+        </div>
+        {isAdmin && (
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110"
+          >
+            {showForm ? "Cancel" : "+ New form"}
+          </button>
+        )}
+      </div>
+
+      {showForm && isAdmin && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New form</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Name
+              <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="Lead intake"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Public slug <span className="text-faint">(lowercase, digits, hyphens)</span>
+              <input value={fSlug} onChange={(e) => setFSlug(e.target.value.toLowerCase())} placeholder="lead-intake"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 font-mono text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Object
+              <select value={fObject} onChange={(e) => { setFObject(e.target.value); setFFields([]); }}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                {objects.map((o) => <option key={o.slug} value={o.slug}>{o.name} ({o.slug})</option>)}
+              </select>
+            </label>
+          </div>
+          {selectedObject && (
+            <div className="mt-3">
+              <div className="text-xs text-muted">Fields to expose <span className="text-faint">(none selected = all non-hidden fields)</span></div>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {selectedObject.fields.map((f) => {
+                  const on = fFields.includes(f.slug);
+                  return (
+                    <button
+                      key={f.slug}
+                      onClick={() => setFFields((prev) => on ? prev.filter((s) => s !== f.slug) : [...prev, f.slug])}
+                      className={`rounded-full px-2.5 py-1 text-xs transition ${on ? "bg-accent text-on-accent" : "bg-background text-muted hover:text-foreground"}`}
+                    >
+                      {f.name}{f.required ? " *" : ""}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <button
+            onClick={createForm}
+            disabled={busy === "create" || !fName.trim() || !fSlug.trim() || !fObject}
+            className="mt-3 rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50"
+          >
+            {busy === "create" ? "Creating…" : "Create form"}
+          </button>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-20 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {forms.map((form) => (
+            <div key={form.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold">{form.name}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[10px] ${form.active ? "bg-success/10 text-success" : "bg-background text-muted"}`}>
+                    {form.active ? "active" : "inactive"}
+                  </span>
+                </div>
+                <div className="mt-0.5 text-xs text-muted">
+                  <span className="font-mono">/{form.slug}</span> → {form.object} · {form.fields.length || "all"} field(s) · {form.submissions} submission(s)
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button onClick={() => copyLink(form.slug)} className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground">
+                  <Copy size={12} className="mr-1 inline" />Copy link
+                </button>
+                {isAdmin && (
+                  <>
+                    <button
+                      onClick={() => toggleActive(form)}
+                      disabled={busy === form.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground disabled:opacity-50"
+                    >
+                      {form.active ? "Deactivate" : "Activate"}
+                    </button>
+                    <button
+                      onClick={() => deleteForm(form)}
+                      disabled={busy === form.id}
+                      className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+          {forms.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No forms yet. Create one to collect intake from anyone with the link — no login required.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
