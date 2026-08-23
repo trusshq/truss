@@ -54,6 +54,7 @@ import {
   Receipt,
   Repeat,
   RotateCcw,
+  Scale,
   Search,
   Send,
   Shield,
@@ -151,6 +152,7 @@ type View =
   | { kind: "loyalty" }
   | { kind: "recruiting" }
   | { kind: "payroll" }
+  | { kind: "accounting" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -632,6 +634,14 @@ function SidebarContent({
           label="Payroll"
         />
 
+        {/* Accounting — chart of accounts, journal, trial balance */}
+        <NavItem
+          active={view.kind === "accounting"}
+          onClick={() => go({ kind: "accounting" })}
+          icon={<Scale size={15} />}
+          label="Accounting"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -989,6 +999,7 @@ export default function DashboardPage() {
             {view.kind === "loyalty" && <LoyaltyView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "recruiting" && <RecruitingView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "payroll" && <PayrollView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "accounting" && <AccountingView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5528,6 +5539,449 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Major Phase 8: Accounting ---------------- */
+
+interface GlAccountDef {
+  id: string;
+  code: string;
+  name: string;
+  account_type: string;
+  description: string;
+  status: string;
+  created_at: string | null;
+}
+interface GlLineDef {
+  id: string;
+  entry_id: string;
+  account_id: string;
+  debit_cents: number;
+  credit_cents: number;
+  memo: string;
+}
+interface GlEntryDef {
+  id: string;
+  entry_date: string;
+  memo: string;
+  status: string;
+  source: string;
+  lines?: GlLineDef[];
+  total_debit_cents?: number;
+  total_credit_cents?: number;
+  created_at: string | null;
+}
+interface GlTbRow {
+  account_id: string;
+  code: string;
+  name: string;
+  account_type: string;
+  debit_cents: number;
+  credit_cents: number;
+  net_cents: number;
+}
+interface GlTrialBalance {
+  as_of: string | null;
+  rows: GlTbRow[];
+  total_debit_cents: number;
+  total_credit_cents: number;
+  balanced: boolean;
+}
+
+const ACCOUNT_TYPE_STYLE: Record<string, string> = {
+  asset: "bg-accent/10 text-accent",
+  liability: "bg-warning/10 text-warning",
+  equity: "bg-background text-muted",
+  revenue: "bg-success/10 text-success",
+  expense: "bg-danger/10 text-danger",
+};
+const ENTRY_STATUS_STYLE: Record<string, string> = {
+  draft: "bg-background text-muted",
+  posted: "bg-success/10 text-success",
+};
+
+function AccountingView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [accounts, setAccounts] = useState<GlAccountDef[]>([]);
+  const [entries, setEntries] = useState<GlEntryDef[]>([]);
+  const [tb, setTb] = useState<GlTrialBalance | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  // account form
+  const [showAccountForm, setShowAccountForm] = useState(false);
+  const [accCode, setAccCode] = useState("");
+  const [accName, setAccName] = useState("");
+  const [accType, setAccType] = useState("asset");
+
+  // entry form
+  const [showEntryForm, setShowEntryForm] = useState(false);
+  const [entDate, setEntDate] = useState("");
+  const [entMemo, setEntMemo] = useState("");
+  const [entLines, setEntLines] = useState<{ account_id: string; debit: string; credit: string }[]>([
+    { account_id: "", debit: "", credit: "" },
+    { account_id: "", debit: "", credit: "" },
+  ]);
+
+  const load = useCallback(async () => {
+    try {
+      const [accRes, entRes, tbRes] = await Promise.all([
+        api<{ items: GlAccountDef[] }>("/api/accounting/accounts"),
+        api<{ items: GlEntryDef[] }>("/api/accounting/entries"),
+        api<GlTrialBalance>("/api/accounting/trial-balance"),
+      ]);
+      setAccounts(accRes.items);
+      setEntries(entRes.items);
+      setTb(tbRes);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const accById = (id: string) => accounts.find((a) => a.id === id);
+  const activeAccounts = accounts.filter((a) => a.status === "active");
+
+  function setLine(i: number, patch: Partial<{ account_id: string; debit: string; credit: string }>) {
+    setEntLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+  }
+
+  async function createAccount() {
+    if (!accCode.trim() || !accName.trim()) {
+      toast("Enter a code and a name", "error");
+      return;
+    }
+    setBusy("create-account");
+    try {
+      await api("/api/accounting/accounts", {
+        method: "POST",
+        body: { code: accCode.trim(), name: accName.trim(), account_type: accType },
+      });
+      toast("Account created", "success");
+      setShowAccountForm(false);
+      setAccCode(""); setAccName(""); setAccType("asset");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function createEntry() {
+    if (!entDate) {
+      toast("Pick an entry date", "error");
+      return;
+    }
+    const lines = entLines
+      .filter((l) => l.account_id && (l.debit || l.credit))
+      .map((l) => ({
+        account_id: l.account_id,
+        debit_cents: Math.round((parseFloat(l.debit) || 0) * 100),
+        credit_cents: Math.round((parseFloat(l.credit) || 0) * 100),
+      }));
+    if (lines.length < 2) {
+      toast("An entry needs at least 2 lines", "error");
+      return;
+    }
+    setBusy("create-entry");
+    try {
+      await api("/api/accounting/entries", {
+        method: "POST",
+        body: { entry_date: entDate, memo: entMemo.trim(), lines },
+      });
+      toast("Journal entry drafted", "success");
+      setShowEntryForm(false);
+      setEntDate(""); setEntMemo("");
+      setEntLines([{ account_id: "", debit: "", credit: "" }, { account_id: "", debit: "", credit: "" }]);
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function postEntry(e: GlEntryDef) {
+    setBusy(e.id);
+    try {
+      await api(`/api/accounting/entries/${e.id}/post`, { method: "POST", body: {} });
+      toast("Entry posted", "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Post failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeEntry(e: GlEntryDef) {
+    setBusy(e.id);
+    try {
+      await api(`/api/accounting/entries/${e.id}`, { method: "DELETE" });
+      toast("Draft entry deleted", "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeAccount(a: GlAccountDef) {
+    setBusy(a.id);
+    try {
+      await api(`/api/accounting/accounts/${a.id}`, { method: "DELETE" });
+      toast(`Deleted ${a.code} ${a.name}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Accounting</h1>
+          <p className="mt-0.5 text-xs text-muted">Double-entry general ledger: chart of accounts, journal entries (draft → post), and trial balance.</p>
+        </div>
+        {canEdit && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setShowAccountForm((v) => !v)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              {showAccountForm ? "Close" : "+ New account"}
+            </button>
+            <button onClick={() => setShowEntryForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+              {showEntryForm ? "Close" : "+ New journal entry"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* trial balance summary */}
+      {tb && (
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-xl border border-border bg-card px-4 py-3">
+            <div className="text-xs text-muted">Total debits (posted)</div>
+            <div className="mt-1 text-xl font-bold">{fmtCents(tb.total_debit_cents)}</div>
+          </div>
+          <div className="rounded-xl border border-border bg-card px-4 py-3">
+            <div className="text-xs text-muted">Total credits (posted)</div>
+            <div className="mt-1 text-xl font-bold">{fmtCents(tb.total_credit_cents)}</div>
+          </div>
+          <div className="rounded-xl border border-border bg-card px-4 py-3">
+            <div className="text-xs text-muted">Books</div>
+            <div className={`mt-1 text-xl font-bold ${tb.balanced ? "text-success" : "text-danger"}`}>
+              {tb.balanced ? "Balanced" : "Unbalanced"}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* account form */}
+      {showAccountForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New account</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            <label className="text-xs text-muted">
+              Code
+              <input value={accCode} onChange={(e) => setAccCode(e.target.value)} placeholder="1000"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Name
+              <input value={accName} onChange={(e) => setAccName(e.target.value)} placeholder="Cash"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Type
+              <select value={accType} onChange={(e) => setAccType(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+                <option value="asset">Asset</option>
+                <option value="liability">Liability</option>
+                <option value="equity">Equity</option>
+                <option value="revenue">Revenue</option>
+                <option value="expense">Expense</option>
+              </select>
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createAccount} disabled={busy === "create-account" || !accCode.trim() || !accName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-account" ? "Creating…" : "Create account"}
+            </button>
+            <button onClick={() => setShowAccountForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* entry form */}
+      {showEntryForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New journal entry</h2>
+          <p className="mt-1 text-xs text-muted">Debits must equal credits. Amounts are in dollars.</p>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Date
+              <input type="date" value={entDate} onChange={(e) => setEntDate(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Memo
+              <input value={entMemo} onChange={(e) => setEntMemo(e.target.value)} placeholder="August revenue"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 space-y-2">
+            {entLines.map((l, i) => (
+              <div key={i} className="grid gap-2 md:grid-cols-4">
+                <select value={l.account_id} onChange={(e) => setLine(i, { account_id: e.target.value })}
+                  className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent">
+                  <option value="">Account…</option>
+                  {activeAccounts.map((a) => (
+                    <option key={a.id} value={a.id}>{a.code} — {a.name}</option>
+                  ))}
+                </select>
+                <input type="number" min={0} step="0.01" value={l.debit} onChange={(e) => setLine(i, { debit: e.target.value })} placeholder="Debit"
+                  className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent" />
+                <input type="number" min={0} step="0.01" value={l.credit} onChange={(e) => setLine(i, { credit: e.target.value })} placeholder="Credit"
+                  className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent" />
+                <button onClick={() => setEntLines((prev) => prev.filter((_, idx) => idx !== i))} disabled={entLines.length <= 2}
+                  className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-30">Remove</button>
+              </div>
+            ))}
+            <button onClick={() => setEntLines((prev) => [...prev, { account_id: "", debit: "", credit: "" }])}
+              className="rounded-lg border border-dashed border-border px-3 py-1 text-xs text-muted transition hover:text-accent">+ Add line</button>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createEntry} disabled={busy === "create-entry" || !entDate}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create-entry" ? "Drafting…" : "Draft entry"}
+            </button>
+            <button onClick={() => setShowEntryForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* journal entries */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Journal entries</h2>
+        {loading ? (
+          <div className="space-y-3">{[0, 1].map((i) => <div key={i} className="skeleton h-14 w-full rounded-xl" />)}</div>
+        ) : (
+          <div className="space-y-2">
+            {entries.map((e) => (
+              <div key={e.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">{e.entry_date}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${ENTRY_STATUS_STYLE[e.status] ?? "bg-background text-muted"}`}>{e.status}</span>
+                    <span className="rounded-full bg-background px-2 py-0.5 text-[10px] capitalize text-muted">{e.source}</span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">{e.memo || "no memo"}</div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {isAdmin && e.status === "draft" && (
+                    <button onClick={() => postEntry(e)} disabled={busy === e.id}
+                      className="rounded-lg bg-accent px-3 py-1 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">Post</button>
+                  )}
+                  {isAdmin && e.status === "draft" && (
+                    <button onClick={() => removeEntry(e)} disabled={busy === e.id}
+                      className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                  )}
+                </div>
+              </div>
+            ))}
+            {entries.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted">
+                No journal entries yet. Draft one above.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* chart of accounts */}
+      <div>
+        <h2 className="mb-2 text-sm font-semibold">Chart of accounts</h2>
+        {loading ? (
+          <div className="skeleton h-16 w-full rounded-xl" />
+        ) : (
+          <div className="grid gap-2 md:grid-cols-2">
+            {accounts.map((a) => (
+              <div key={a.id} className="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold">{a.code} — {a.name}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${ACCOUNT_TYPE_STYLE[a.account_type] ?? "bg-background text-muted"}`}>{a.account_type}</span>
+                    {a.status === "archived" && <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">archived</span>}
+                  </div>
+                  {a.description && <div className="mt-0.5 text-xs text-muted">{a.description}</div>}
+                </div>
+                {isAdmin && (
+                  <button onClick={() => removeAccount(a)} disabled={busy === a.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                )}
+              </div>
+            ))}
+            {accounts.length === 0 && (
+              <div className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-sm text-muted md:col-span-2">
+                No accounts yet. Create your chart of accounts to start booking entries.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* trial balance table */}
+      {tb && tb.rows.length > 0 && (
+        <div>
+          <h2 className="mb-2 text-sm font-semibold">Trial balance</h2>
+          <div className="overflow-x-auto rounded-xl border border-border bg-card">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-border text-muted">
+                  <th className="px-4 py-2 font-medium">Account</th>
+                  <th className="px-4 py-2 font-medium">Type</th>
+                  <th className="px-4 py-2 text-right font-medium">Debit</th>
+                  <th className="px-4 py-2 text-right font-medium">Credit</th>
+                  <th className="px-4 py-2 text-right font-medium">Net</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tb.rows.map((r) => (
+                  <tr key={r.account_id} className="border-b border-border last:border-0">
+                    <td className="px-4 py-2">{r.code} — {r.name}</td>
+                    <td className="px-4 py-2 capitalize text-muted">{r.account_type}</td>
+                    <td className="px-4 py-2 text-right">{fmtCents(r.debit_cents)}</td>
+                    <td className="px-4 py-2 text-right">{fmtCents(r.credit_cents)}</td>
+                    <td className="px-4 py-2 text-right font-semibold">{fmtCents(r.net_cents)}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td className="px-4 py-2 font-semibold" colSpan={2}>Total</td>
+                  <td className="px-4 py-2 text-right font-semibold">{fmtCents(tb.total_debit_cents)}</td>
+                  <td className="px-4 py-2 text-right font-semibold">{fmtCents(tb.total_credit_cents)}</td>
+                  <td className="px-4 py-2 text-right font-semibold">{fmtCents(tb.total_debit_cents - tb.total_credit_cents)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

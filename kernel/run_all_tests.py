@@ -70,6 +70,7 @@ SUITES = [
     "loyalty_smoke_test.py",
     "recruiting_smoke_test.py",
     "payroll_smoke_test.py",
+    "accounting_smoke_test.py",
 ]
 
 
