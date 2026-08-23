@@ -138,6 +138,7 @@ type View =
   | { kind: "contracts" }
   | { kind: "tickets" }
   | { kind: "campaigns" }
+  | { kind: "assets" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -555,6 +556,14 @@ function SidebarContent({
           label="Campaigns"
         />
 
+        {/* Assets — company asset tracking */}
+        <NavItem
+          active={view.kind === "assets"}
+          onClick={() => go({ kind: "assets" })}
+          icon={<Package size={15} />}
+          label="Assets"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -904,6 +913,7 @@ export default function DashboardPage() {
             {view.kind === "contracts" && <ContractsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "tickets" && <TicketsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "campaigns" && <CampaignsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "assets" && <AssetsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5443,6 +5453,285 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AD: Assets ---------------- */
+
+interface AssetDef {
+  id: string;
+  tag: string;
+  name: string;
+  category: string;
+  description: string;
+  cost_cents: number;
+  currency: string;
+  purchase_date: string;
+  status: string;
+  assignee_id: string | null;
+  location: string;
+  created_at: string | null;
+}
+interface AssetHistoryDef {
+  id: string;
+  asset_id: string;
+  action: string;
+  detail: string;
+  actor_id: string | null;
+  created_at: string | null;
+}
+
+const ASSET_STATUS_STYLE: Record<string, string> = {
+  available: "bg-success/10 text-success",
+  assigned: "bg-accent/10 text-accent",
+  maintenance: "bg-warning/10 text-warning",
+  retired: "bg-background text-muted",
+};
+
+function AssetsView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [assets, setAssets] = useState<AssetDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [history, setHistory] = useState<Record<string, AssetHistoryDef[]>>({});
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fName, setFName] = useState("");
+  const [fCategory, setFCategory] = useState("General");
+  const [fDesc, setFDesc] = useState("");
+  const [fCost, setFCost] = useState("");
+  const [fDate, setFDate] = useState("");
+  const [fLocation, setFLocation] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const qs = statusFilter ? `?status=${statusFilter}` : "";
+      const res = await api<{ items: AssetDef[]; total: number }>(`/api/assets${qs}`);
+      setAssets(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function createAsset() {
+    if (!fName.trim()) {
+      toast("Enter an asset name", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/assets", {
+        method: "POST",
+        body: {
+          name: fName.trim(), category: fCategory, description: fDesc,
+          cost_cents: Math.max(0, Math.round((parseFloat(fCost) || 0) * 100)),
+          purchase_date: fDate, location: fLocation.trim(),
+        },
+      });
+      toast("Asset created", "success");
+      setShowForm(false);
+      setFName(""); setFCategory("General"); setFDesc(""); setFCost(""); setFDate(""); setFLocation("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function action(a: AssetDef, act: "return" | "maintenance" | "retire" | "restore") {
+    setBusy(a.id);
+    try {
+      await api(`/api/assets/${a.id}/${act}`, { method: "POST", body: {} });
+      toast(`Asset ${act === "return" ? "returned" : act + (act === "maintenance" ? "" : act === "retire" ? "d" : "d")}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeAsset(a: AssetDef) {
+    setBusy(a.id);
+    try {
+      await api(`/api/assets/${a.id}`, { method: "DELETE" });
+      toast(`Deleted ${a.tag}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggleExpand(a: AssetDef) {
+    const next = expanded === a.id ? null : a.id;
+    setExpanded(next);
+    if (next && !history[a.id]) {
+      try {
+        const res = await api<{ items: AssetHistoryDef[] }>(`/api/assets/${a.id}/history`);
+        setHistory((prev) => ({ ...prev, [a.id]: res.items }));
+      } catch {
+        setHistory((prev) => ({ ...prev, [a.id]: [] }));
+      }
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Assets</h1>
+          <p className="mt-0.5 text-xs text-muted">Track company assets — assign, maintain, and retire with a full audit trail.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New asset"}
+          </button>
+        )}
+      </div>
+
+      {/* status filter */}
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        {["", "available", "assigned", "maintenance", "retired"].map((st) => (
+          <button key={st} onClick={() => setStatusFilter(st)}
+            className={`rounded-md px-3 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+            {st || "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New asset</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Name
+              <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="MacBook Pro 16"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Category
+              <input value={fCategory} onChange={(e) => setFCategory(e.target.value)} placeholder="Laptop"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Description
+              <textarea value={fDesc} onChange={(e) => setFDesc(e.target.value)} rows={2} placeholder="What is this asset?"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Cost
+              <input type="number" min={0} step="0.01" value={fCost} onChange={(e) => setFCost(e.target.value)} placeholder="2499.00"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Purchase date
+              <input type="date" value={fDate} onChange={(e) => setFDate(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Location
+              <input value={fLocation} onChange={(e) => setFLocation(e.target.value)} placeholder="HQ"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createAsset} disabled={busy === "create" || !fName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create" ? "Creating…" : "Create asset"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* asset list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {assets.map((a) => (
+            <div key={a.id} className="rounded-xl border border-border bg-card">
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <button onClick={() => toggleExpand(a)} className="flex min-w-0 items-center gap-3 text-left">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{a.tag}</span>
+                      <span className="text-sm">{a.name}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${ASSET_STATUS_STYLE[a.status] ?? "bg-background text-muted"}`}>{a.status}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {a.category}
+                      {a.location && <span> · {a.location}</span>}
+                      {a.cost_cents > 0 && <span> · {fmtCents(a.cost_cents)}</span>}
+                      {a.purchase_date && <span> · bought {a.purchase_date}</span>}
+                    </div>
+                  </div>
+                </button>
+                <div className="flex shrink-0 items-center gap-2">
+                  {canEdit && a.status === "assigned" && (
+                    <button onClick={() => action(a, "return")} disabled={busy === a.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent disabled:opacity-50">Return</button>
+                  )}
+                  {canEdit && (a.status === "available" || a.status === "assigned") && (
+                    <button onClick={() => action(a, "maintenance")} disabled={busy === a.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-warning disabled:opacity-50">Maintenance</button>
+                  )}
+                  {canEdit && a.status !== "retired" && (
+                    <button onClick={() => action(a, "retire")} disabled={busy === a.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Retire</button>
+                  )}
+                  {canEdit && (a.status === "retired" || a.status === "maintenance") && (
+                    <button onClick={() => action(a, "restore")} disabled={busy === a.id}
+                      className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Restore</button>
+                  )}
+                  {isAdmin && (
+                    <button onClick={() => removeAsset(a)} disabled={busy === a.id}
+                      className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                  )}
+                </div>
+              </div>
+              {/* expanded: description + history */}
+              {expanded === a.id && (
+                <div className="border-t border-border px-4 py-3">
+                  {a.description && <p className="text-xs text-muted">{a.description}</p>}
+                  <div className="mt-3 space-y-2">
+                    <div className="text-xs font-semibold text-muted">History</div>
+                    {(history[a.id] ?? []).map((h) => (
+                      <div key={h.id} className="flex items-center gap-2 rounded-lg bg-background px-3 py-2 text-xs">
+                        <span className="rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-semibold text-accent">{h.action}</span>
+                        {h.detail && <span className="text-muted">{h.detail}</span>}
+                        {h.created_at && <span className="ml-auto text-[10px] text-muted">{new Date(h.created_at).toLocaleString()}</span>}
+                      </div>
+                    ))}
+                    {(history[a.id] ?? []).length === 0 && <p className="text-xs text-muted">No history yet.</p>}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          {assets.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No assets yet. Add one to start tracking company equipment.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
