@@ -53,6 +53,7 @@ import {
   Sun,
   Target,
   Trash2,
+  Truck,
   UserCircle,
   UserPlus,
   Users,
@@ -130,6 +131,7 @@ type View =
   | { kind: "hr" }
   | { kind: "approvals" }
   | { kind: "quotes" }
+  | { kind: "purchase_orders" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -515,6 +517,14 @@ function SidebarContent({
           label="Quotes"
         />
 
+        {/* Purchase Orders — procurement */}
+        <NavItem
+          active={view.kind === "purchase_orders"}
+          onClick={() => go({ kind: "purchase_orders" })}
+          icon={<Truck size={15} />}
+          label="Purchase Orders"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -860,6 +870,7 @@ export default function DashboardPage() {
             {view.kind === "hr" && <HRView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "approvals" && <ApprovalsView isAdmin={me.role === "owner" || me.role === "admin"} setView={setView} />}
             {view.kind === "quotes" && <QuotesView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "purchase_orders" && <PurchaseOrdersView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5399,6 +5410,307 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase Z: Purchase Orders ---------------- */
+
+interface POLineItem {
+  product_id: string;
+  description: string;
+  quantity: number;
+  unit_cost_cents: number;
+}
+interface PODef {
+  id: string;
+  number: string;
+  vendor_name: string;
+  notes: string;
+  currency: string;
+  status: string;
+  expected_date: string;
+  line_items: POLineItem[];
+  total_cents: number;
+  received_at: string;
+  created_at: string | null;
+}
+interface ProductPick {
+  id: string;
+  name: string;
+  sku: string;
+  quantity: number;
+}
+
+const PO_STATUS_STYLE: Record<string, string> = {
+  draft: "bg-background text-muted",
+  sent: "bg-accent/10 text-accent",
+  received: "bg-success/10 text-success",
+  cancelled: "bg-danger/10 text-danger",
+};
+
+function PurchaseOrdersView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [pos, setPos] = useState<PODef[]>([]);
+  const [products, setProducts] = useState<ProductPick[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fVendor, setFVendor] = useState("");
+  const [fExpected, setFExpected] = useState("");
+  const [fItems, setFItems] = useState<POLineItem[]>([]);
+
+  const load = useCallback(async () => {
+    try {
+      const qs = statusFilter ? `?status=${statusFilter}` : "";
+      const [poRes, prodRes] = await Promise.all([
+        api<{ items: PODef[]; total: number }>(`/api/purchase-orders${qs}`),
+        api<{ items: ProductPick[] } | ProductPick[]>("/api/inventory/products"),
+      ]);
+      setPos(poRes.items);
+      setProducts(Array.isArray(prodRes) ? prodRes : prodRes.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  function addProductLine(productId: string) {
+    const prod = products.find((p) => p.id === productId);
+    if (!prod) return;
+    setFItems((prev) => [...prev, { product_id: prod.id, description: prod.name, quantity: 1, unit_cost_cents: 0 }]);
+  }
+
+  function updateLine(idx: number, patch: Partial<POLineItem>) {
+    setFItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  }
+
+  async function createPO() {
+    if (!fVendor.trim()) {
+      toast("Enter a vendor name", "error");
+      return;
+    }
+    if (fItems.length === 0) {
+      toast("Add at least one product line", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/purchase-orders", {
+        method: "POST",
+        body: { vendor_name: fVendor.trim(), expected_date: fExpected, line_items: fItems },
+      });
+      toast("Purchase order created", "success");
+      setShowForm(false);
+      setFVendor(""); setFExpected(""); setFItems([]);
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function action(po: PODef, act: "send" | "receive" | "cancel") {
+    setBusy(po.id);
+    try {
+      await api(`/api/purchase-orders/${po.id}/${act}`, { method: "POST", body: {} });
+      toast(`PO ${act === "receive" ? "received into inventory" : act + (act === "cancel" ? "led" : "ed")}`, "success");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removePO(po: PODef) {
+    setBusy(po.id);
+    try {
+      await api(`/api/purchase-orders/${po.id}`, { method: "DELETE" });
+      toast(`Deleted ${po.number}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const formTotal = fItems.reduce((a, i) => a + i.quantity * i.unit_cost_cents, 0);
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Purchase Orders</h1>
+          <p className="mt-0.5 text-xs text-muted">Procurement orders — send to vendors and receive into inventory.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New PO"}
+          </button>
+        )}
+      </div>
+
+      {/* status filter */}
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        {["", "draft", "sent", "received", "cancelled"].map((st) => (
+          <button key={st} onClick={() => setStatusFilter(st)}
+            className={`rounded-md px-3 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+            {st || "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New purchase order</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted">
+              Vendor
+              <input value={fVendor} onChange={(e) => setFVendor(e.target.value)} placeholder="Supplier Co"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Expected date
+              <input type="date" value={fExpected} onChange={(e) => setFExpected(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          {/* product lines */}
+          <div className="mt-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-muted">Products</span>
+              <select onChange={(e) => { if (e.target.value) { addProductLine(e.target.value); e.target.value = ""; } }}
+                className="rounded-lg border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:border-accent" defaultValue="">
+                <option value="" disabled>+ Add product…</option>
+                {products.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.sku}) — {p.quantity} in stock</option>
+                ))}
+              </select>
+            </div>
+            {fItems.map((item, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <span className="flex-1 truncate text-sm">{item.description}</span>
+                <input type="number" min={1} value={item.quantity} onChange={(e) => updateLine(idx, { quantity: Math.max(1, parseInt(e.target.value) || 1) })}
+                  className="w-16 rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                <input type="number" min={0} step={100} value={item.unit_cost_cents} onChange={(e) => updateLine(idx, { unit_cost_cents: Math.max(0, parseInt(e.target.value) || 0) })}
+                  placeholder="¢" className="w-24 rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                <span className="w-20 text-right text-xs text-muted">{fmtCents(item.quantity * item.unit_cost_cents)}</span>
+                <button onClick={() => setFItems((p) => p.filter((_, i) => i !== idx))} className="text-muted hover:text-danger"><Trash2 size={13} /></button>
+              </div>
+            ))}
+            {fItems.length === 0 && <p className="text-xs text-muted">No products added yet. Use the dropdown above.</p>}
+          </div>
+          <div className="mt-3 flex items-center justify-between">
+            <span className="text-sm font-semibold">Total: {fmtCents(formTotal)}</span>
+            <div className="flex items-center gap-2">
+              <button onClick={createPO} disabled={busy === "create" || !fVendor.trim() || fItems.length === 0}
+                className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                {busy === "create" ? "Creating…" : "Create PO"}
+              </button>
+              <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PO list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {pos.map((po) => (
+            <div key={po.id} className="rounded-xl border border-border bg-card">
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+                <button onClick={() => setExpanded(expanded === po.id ? null : po.id)} className="flex min-w-0 items-center gap-3 text-left">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold">{po.number}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${PO_STATUS_STYLE[po.status] ?? "bg-background text-muted"}`}>{po.status}</span>
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      {po.vendor_name || "—"}
+                      {po.expected_date && <span> · expected {po.expected_date}</span>}
+                      {po.received_at && <span> · received {new Date(po.received_at).toLocaleDateString()}</span>}
+                    </div>
+                  </div>
+                </button>
+                <div className="flex shrink-0 items-center gap-3">
+                  <span className="text-sm font-bold">{fmtCents(po.total_cents, po.currency)}</span>
+                  {canEdit && po.status === "draft" && (
+                    <>
+                      <button onClick={() => action(po, "send")} disabled={busy === po.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-accent disabled:opacity-50">Send</button>
+                      <button onClick={() => action(po, "cancel")} disabled={busy === po.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                    </>
+                  )}
+                  {canEdit && po.status === "sent" && (
+                    <>
+                      <button onClick={() => action(po, "receive")} disabled={busy === po.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Receive</button>
+                      <button onClick={() => action(po, "cancel")} disabled={busy === po.id}
+                        className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Cancel</button>
+                    </>
+                  )}
+                  {isAdmin && (
+                    <button onClick={() => removePO(po)} disabled={busy === po.id}
+                      className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                  )}
+                </div>
+              </div>
+              {/* expanded line items */}
+              {expanded === po.id && (
+                <div className="border-t border-border px-4 py-3">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-muted">
+                        <th className="pb-1">Product</th>
+                        <th className="pb-1 text-right">Qty</th>
+                        <th className="pb-1 text-right">Unit cost</th>
+                        <th className="pb-1 text-right">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {po.line_items.map((li, i) => (
+                        <tr key={i} className="border-t border-border/50">
+                          <td className="py-1">{li.description}</td>
+                          <td className="py-1 text-right">{li.quantity}</td>
+                          <td className="py-1 text-right">{fmtCents(li.unit_cost_cents, po.currency)}</td>
+                          <td className="py-1 text-right">{fmtCents(li.quantity * li.unit_cost_cents, po.currency)}</td>
+                        </tr>
+                      ))}
+                      <tr className="border-t border-border font-bold">
+                        <td colSpan={3} className="py-1 text-right">Total</td>
+                        <td className="py-1 text-right">{fmtCents(po.total_cents, po.currency)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          ))}
+          {pos.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No purchase orders yet. Create one to start procuring stock.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
