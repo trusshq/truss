@@ -15,6 +15,7 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
+  ClipboardList,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -144,6 +145,7 @@ type View =
   | { kind: "subscriptions" }
   | { kind: "bookings" }
   | { kind: "okrs" }
+  | { kind: "surveys" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -593,6 +595,14 @@ function SidebarContent({
           label="OKRs"
         />
 
+        {/* Surveys — feedback & analytics */}
+        <NavItem
+          active={view.kind === "surveys"}
+          onClick={() => go({ kind: "surveys" })}
+          icon={<ClipboardList size={15} />}
+          label="Surveys"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -946,6 +956,7 @@ export default function DashboardPage() {
             {view.kind === "subscriptions" && <SubscriptionsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "bookings" && <BookingsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "okrs" && <OKRsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "surveys" && <SurveysView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5485,6 +5496,353 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase AH: Surveys ---------------- */
+
+interface SvQuestionDef {
+  id: string;
+  survey_id: string;
+  text: string;
+  kind: string;
+  options: string[];
+  position: number;
+  required: boolean;
+}
+interface SurveyDef {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  response_count: number;
+  questions: SvQuestionDef[];
+  created_at: string | null;
+}
+interface SvAnalyticsQ {
+  question_id: string;
+  text: string;
+  kind: string;
+  answered: number;
+  average?: number | null;
+  choice_counts?: Record<string, number>;
+}
+interface SvAnalytics {
+  survey_id: string;
+  total_responses: number;
+  questions: SvAnalyticsQ[];
+}
+
+const SURVEY_STATUS_STYLE: Record<string, string> = {
+  draft: "bg-background text-muted",
+  published: "bg-success/10 text-success",
+  closed: "bg-danger/10 text-danger",
+};
+
+function SurveysView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [surveys, setSurveys] = useState<SurveyDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [analytics, setAnalytics] = useState<Record<string, SvAnalytics>>({});
+
+  // create survey form
+  const [showForm, setShowForm] = useState(false);
+  const [fTitle, setFTitle] = useState("");
+  const [fDesc, setFDesc] = useState("");
+
+  // add question form (per expanded survey)
+  const [qText, setQText] = useState("");
+  const [qKind, setQKind] = useState("text");
+  const [qOptions, setQOptions] = useState("");
+  const [qRequired, setQRequired] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const qs = statusFilter ? `?status=${statusFilter}` : "";
+      const res = await api<{ items: SurveyDef[]; total: number }>(`/api/surveys${qs}`);
+      setSurveys(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function loadAnalytics(sv: SurveyDef) {
+    try {
+      const an = await api<SvAnalytics>(`/api/surveys/${sv.id}/analytics`);
+      setAnalytics((prev) => ({ ...prev, [sv.id]: an }));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function toggleExpand(sv: SurveyDef) {
+    const next = expanded === sv.id ? null : sv.id;
+    setExpanded(next);
+    if (next) loadAnalytics(sv);
+  }
+
+  async function createSurvey() {
+    if (!fTitle.trim()) {
+      toast("Enter a survey title", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      await api("/api/surveys", { method: "POST", body: { title: fTitle.trim(), description: fDesc } });
+      toast("Survey created", "success");
+      setShowForm(false);
+      setFTitle(""); setFDesc("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function addQuestion(sv: SurveyDef) {
+    if (!qText.trim()) {
+      toast("Enter question text", "error");
+      return;
+    }
+    if (qKind === "choice" && qOptions.split(",").map((o) => o.trim()).filter(Boolean).length < 2) {
+      toast("Choice questions need at least 2 comma-separated options", "error");
+      return;
+    }
+    setBusy(sv.id);
+    try {
+      await api(`/api/surveys/${sv.id}/questions`, {
+        method: "POST",
+        body: {
+          text: qText.trim(), kind: qKind,
+          options: qKind === "choice" ? qOptions.split(",").map((o) => o.trim()).filter(Boolean) : [],
+          position: sv.questions.length + 1, required: qRequired,
+        },
+      });
+      toast("Question added", "success");
+      setQText(""); setQKind("text"); setQOptions(""); setQRequired(false);
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Add failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function surveyAction(sv: SurveyDef, act: "publish" | "close") {
+    setBusy(sv.id);
+    try {
+      await api(`/api/surveys/${sv.id}/${act}`, { method: "POST", body: {} });
+      toast(`Survey ${act === "publish" ? "published" : "closed"}`, "success");
+      await load();
+      if (expanded === sv.id) loadAnalytics(sv);
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Action failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function removeSurvey(sv: SurveyDef) {
+    setBusy(sv.id);
+    try {
+      await api(`/api/surveys/${sv.id}`, { method: "DELETE" });
+      toast(`Deleted ${sv.title}`, "info");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Surveys & Feedback</h1>
+          <p className="mt-0.5 text-xs text-muted">Build questionnaires, collect responses, and see live analytics.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New survey"}
+          </button>
+        )}
+      </div>
+
+      {/* status filter */}
+      <div className="flex items-center gap-1 rounded-lg border border-border bg-card p-1 w-fit">
+        {["", "draft", "published", "closed"].map((st) => (
+          <button key={st} onClick={() => setStatusFilter(st)}
+            className={`rounded-md px-2.5 py-1 text-xs capitalize transition ${statusFilter === st ? "bg-accent text-on-accent font-semibold" : "text-muted hover:text-foreground"}`}>
+            {st || "All"}
+          </button>
+        ))}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New survey</h2>
+          <div className="mt-3 grid gap-3">
+            <label className="text-xs text-muted">
+              Title
+              <input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Customer satisfaction"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Description
+              <textarea value={fDesc} onChange={(e) => setFDesc(e.target.value)} rows={2} placeholder="What do you want to learn?"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={createSurvey} disabled={busy === "create" || !fTitle.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create" ? "Creating…" : "Create survey"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* survey list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-20 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {surveys.map((sv) => {
+            const an = analytics[sv.id];
+            return (
+              <div key={sv.id} className="rounded-xl border border-border bg-card">
+                <div className="px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <button onClick={() => toggleExpand(sv)} className="flex min-w-0 items-center gap-3 text-left">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold">{sv.title}</span>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${SURVEY_STATUS_STYLE[sv.status] ?? "bg-background text-muted"}`}>{sv.status}</span>
+                          <span className="rounded-full bg-background px-2 py-0.5 text-[10px] text-muted">{sv.questions.length} Q · {sv.response_count} responses</span>
+                        </div>
+                        {sv.description && <div className="mt-0.5 text-xs text-muted">{sv.description}</div>}
+                      </div>
+                    </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {canEdit && sv.status === "draft" && (
+                        <button onClick={() => surveyAction(sv, "publish")} disabled={busy === sv.id || sv.questions.length === 0}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">Publish</button>
+                      )}
+                      {canEdit && sv.status === "published" && (
+                        <button onClick={() => surveyAction(sv, "close")} disabled={busy === sv.id}
+                          className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">Close</button>
+                      )}
+                      {isAdmin && (
+                        <button onClick={() => removeSurvey(sv)} disabled={busy === sv.id}
+                          className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50"><Trash2 size={12} /></button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                {/* expanded: questions + analytics */}
+                {expanded === sv.id && (
+                  <div className="border-t border-border px-4 py-3">
+                    <div className="text-xs font-semibold text-muted">Questions</div>
+                    <div className="mt-2 space-y-2">
+                      {sv.questions.map((q) => (
+                        <div key={q.id} className="rounded-lg bg-background px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium">{q.position}. {q.text}{q.required && <span className="text-danger"> *</span>}</span>
+                            <span className="rounded-full bg-card px-2 py-0.5 text-[10px] capitalize text-muted">{q.kind}</span>
+                          </div>
+                          {q.kind === "choice" && q.options.length > 0 && (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {q.options.map((opt) => (
+                                <span key={opt} className="rounded-full bg-card px-2 py-0.5 text-[10px] text-muted">{opt}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      {sv.questions.length === 0 && <p className="text-xs text-muted">No questions yet. Add one to publish this survey.</p>}
+                    </div>
+                    {/* add question (draft only) */}
+                    {canEdit && sv.status === "draft" && (
+                      <div className="mt-3 space-y-2 rounded-lg border border-dashed border-border p-3">
+                        <div className="grid gap-2 md:grid-cols-3">
+                          <input value={qText} onChange={(e) => setQText(e.target.value)} placeholder="Question text"
+                            className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent md:col-span-2" />
+                          <select value={qKind} onChange={(e) => setQKind(e.target.value)}
+                            className="rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent">
+                            <option value="text">Text</option>
+                            <option value="rating">Rating</option>
+                            <option value="choice">Choice</option>
+                          </select>
+                        </div>
+                        {qKind === "choice" && (
+                          <input value={qOptions} onChange={(e) => setQOptions(e.target.value)} placeholder="Option A, Option B, Option C"
+                            className="w-full rounded-lg border border-border bg-background px-3 py-1.5 text-xs text-foreground outline-none focus:border-accent" />
+                        )}
+                        <div className="flex items-center justify-between">
+                          <label className="flex items-center gap-2 text-xs text-muted">
+                            <input type="checkbox" checked={qRequired} onChange={(e) => setQRequired(e.target.checked)} className="accent-accent" />
+                            Required
+                          </label>
+                          <button onClick={() => addQuestion(sv)} disabled={busy === sv.id || !qText.trim()}
+                            className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">Add question</button>
+                        </div>
+                      </div>
+                    )}
+                    {/* analytics */}
+                    {an && an.total_responses > 0 && (
+                      <div className="mt-3">
+                        <div className="text-xs font-semibold text-muted">Analytics — {an.total_responses} response{an.total_responses === 1 ? "" : "s"}</div>
+                        <div className="mt-2 space-y-2">
+                          {an.questions.map((aq) => (
+                            <div key={aq.question_id} className="rounded-lg bg-background px-3 py-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-medium">{aq.text}</span>
+                                <span className="text-[10px] text-muted">{aq.answered} answered</span>
+                              </div>
+                              {aq.kind === "rating" && aq.average != null && (
+                                <div className="mt-1 text-[10px] text-muted">Average rating: <span className="font-semibold text-foreground">{aq.average}</span></div>
+                              )}
+                              {aq.kind === "choice" && aq.choice_counts && (
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {Object.entries(aq.choice_counts).map(([opt, count]) => (
+                                    <span key={opt} className="rounded-full bg-card px-2 py-0.5 text-[10px] text-muted">{opt}: {count}</span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {surveys.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No surveys yet. Create one to start collecting feedback.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
