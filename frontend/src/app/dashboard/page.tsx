@@ -24,6 +24,7 @@ import {
   Database,
   Download,
   FileText,
+  FolderKanban,
   History,
   Home,
   Inbox,
@@ -122,6 +123,7 @@ type View =
   | { kind: "kb" }
   | { kind: "time" }
   | { kind: "expenses" }
+  | { kind: "projects" }
   | { kind: "developer" }
   | { kind: "automations" }
   | { kind: "connectors" }
@@ -467,6 +469,14 @@ function SidebarContent({
           label="Expenses"
         />
 
+        {/* Projects — standalone */}
+        <NavItem
+          active={view.kind === "projects"}
+          onClick={() => go({ kind: "projects" })}
+          icon={<FolderKanban size={15} />}
+          label="Projects"
+        />
+
         {/* Automations — automations, connectors, events */}
         <NavSection
           icon={<Cog size={15} />}
@@ -807,6 +817,7 @@ export default function DashboardPage() {
             {view.kind === "kb" && <KBView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "time" && <TimeView canEdit={me.role !== "viewer"} />}
             {view.kind === "expenses" && <ExpensesView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
+            {view.kind === "projects" && <ProjectsView canEdit={me.role !== "viewer"} isAdmin={me.role === "owner" || me.role === "admin"} />}
             {view.kind === "profile" && <ProfileView me={me} onMeChanged={refresh} />}
             {view.kind === "object" && (
               <ObjectView
@@ -5288,6 +5299,385 @@ function AutomationsView() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ---------------- Phase T: Projects ---------------- */
+
+interface ProjectDef {
+  id: string;
+  name: string;
+  slug: string;
+  description: string;
+  status: string;
+  budget_cents: number;
+  currency: string;
+  start_date: string;
+  end_date: string;
+  owner_id: string | null;
+  created_at: string;
+}
+interface ProjectSummary {
+  project_id: string;
+  status: string;
+  budget_cents: number;
+  spent_cents: number;
+  remaining_cents: number;
+  budget_used_pct: number | null;
+  time_minutes: number;
+  time_entries: number;
+  expenses: number;
+  milestones_total: number;
+  milestones_done: number;
+  milestones: { id: string; title: string; due_date: string; status: string; notes: string }[];
+}
+
+const PROJECT_STATUSES = ["planning", "active", "on_hold", "completed", "cancelled"];
+const PROJECT_STATUS_STYLE: Record<string, string> = {
+  planning: "bg-background text-muted",
+  active: "bg-success/10 text-success",
+  on_hold: "bg-warning/10 text-warning",
+  completed: "bg-accent/10 text-accent",
+  cancelled: "bg-danger/10 text-danger",
+};
+
+function ProjectsView({ canEdit, isAdmin }: { canEdit: boolean; isAdmin: boolean }) {
+  const [projects, setProjects] = useState<ProjectDef[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+
+  // detail
+  const [selected, setSelected] = useState<ProjectDef | null>(null);
+  const [summary, setSummary] = useState<ProjectSummary | null>(null);
+
+  // create form
+  const [showForm, setShowForm] = useState(false);
+  const [fName, setFName] = useState("");
+  const [fDesc, setFDesc] = useState("");
+  const [fBudget, setFBudget] = useState("");
+  const [fStart, setFStart] = useState("");
+  const [fEnd, setFEnd] = useState("");
+  const [fMilestone, setFMilestone] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const params = new URLSearchParams();
+      if (statusFilter) params.set("status", statusFilter);
+      const qs = params.toString();
+      const res = await api<{ items: ProjectDef[] }>(`/api/projects${qs ? `?${qs}` : ""}`);
+      setProjects(res.items);
+    } catch {
+      /* keep last */
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const loadSummary = useCallback(async (id: string) => {
+    try {
+      const s = await api<ProjectSummary>(`/api/projects/${id}/summary`);
+      setSummary(s);
+    } catch {
+      setSummary(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selected) loadSummary(selected.id);
+    else setSummary(null);
+  }, [selected, loadSummary]);
+
+  async function create() {
+    const cents = Math.round(parseFloat(fBudget || "0") * 100);
+    if (!fName.trim() || !Number.isFinite(cents) || cents < 0) {
+      toast("Enter a name and a valid budget", "error");
+      return;
+    }
+    setBusy("create");
+    try {
+      const p = await api<ProjectDef>("/api/projects", {
+        method: "POST",
+        body: { name: fName.trim(), description: fDesc, budget_cents: cents, start_date: fStart, end_date: fEnd, status: "active" },
+      });
+      toast(`Project "${p.name}" created`, "success");
+      if (fMilestone.trim()) {
+        await api(`/api/projects/${p.id}/milestones`, { method: "POST", body: { title: fMilestone.trim() } });
+      }
+      setShowForm(false);
+      setFName(""); setFDesc(""); setFBudget(""); setFStart(""); setFEnd(""); setFMilestone("");
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Create failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function setStatus(p: ProjectDef, status: string) {
+    setBusy(p.id);
+    try {
+      await api(`/api/projects/${p.id}`, { method: "PATCH", body: { status } });
+      toast(`"${p.name}" → ${status.replace("_", " ")}`, "success");
+      await load();
+      if (selected?.id === p.id) setSelected({ ...p, status });
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Update failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function remove(p: ProjectDef) {
+    setBusy(p.id);
+    try {
+      await api(`/api/projects/${p.id}`, { method: "DELETE" });
+      toast(`Deleted "${p.name}"`, "info");
+      if (selected?.id === p.id) setSelected(null);
+      await load();
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Delete failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function addMilestone() {
+    if (!selected || !fMilestone.trim()) return;
+    setBusy("milestone");
+    try {
+      await api(`/api/projects/${selected.id}/milestones`, { method: "POST", body: { title: fMilestone.trim() } });
+      toast("Milestone added", "success");
+      setFMilestone("");
+      await loadSummary(selected.id);
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Add failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function toggleMilestone(m: { id: string; status: string }) {
+    if (!selected) return;
+    setBusy(m.id);
+    try {
+      await api(`/api/projects/${selected.id}/milestones/${m.id}`, {
+        method: "PATCH",
+        body: { status: m.status === "done" ? "pending" : "done" },
+      });
+      await loadSummary(selected.id);
+    } catch (err) {
+      const d = (err as { detail?: unknown }).detail;
+      toast(typeof d === "string" ? d : "Update failed", "error");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold">Projects</h1>
+          <p className="mt-0.5 text-xs text-muted">Budgeted work with milestones. Link time and expenses to track actuals.</p>
+        </div>
+        {canEdit && (
+          <button onClick={() => setShowForm((v) => !v)} className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110">
+            {showForm ? "Close" : "+ New project"}
+          </button>
+        )}
+      </div>
+
+      {/* create form */}
+      {showForm && canEdit && (
+        <div className="rounded-xl border border-border bg-card p-4">
+          <h2 className="text-sm font-semibold">New project</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            <label className="text-xs text-muted md:col-span-2">
+              Name
+              <input value={fName} onChange={(e) => setFName(e.target.value)} placeholder="Website Redesign"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted md:col-span-2">
+              Description
+              <input value={fDesc} onChange={(e) => setFDesc(e.target.value)} placeholder="Optional"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Budget (USD)
+              <input value={fBudget} onChange={(e) => setFBudget(e.target.value)} placeholder="5000" inputMode="decimal"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              First milestone
+              <input value={fMilestone} onChange={(e) => setFMilestone(e.target.value)} placeholder="Kickoff (optional)"
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              Start date
+              <input type="date" value={fStart} onChange={(e) => setFStart(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+            <label className="text-xs text-muted">
+              End date
+              <input type="date" value={fEnd} onChange={(e) => setFEnd(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+            </label>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button onClick={create} disabled={busy === "create" || !fName.trim()}
+              className="rounded-lg bg-accent px-4 py-1.5 text-sm font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+              {busy === "create" ? "Creating…" : "Create project"}
+            </button>
+            <button onClick={() => setShowForm(false)} className="rounded-lg border border-border px-4 py-1.5 text-sm text-muted transition hover:text-foreground">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* filter */}
+      <div className="flex items-center gap-2">
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+          className="rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent">
+          <option value="">All statuses</option>
+          {PROJECT_STATUSES.map((st) => <option key={st} value={st}>{st.replace("_", " ")}</option>)}
+        </select>
+      </div>
+
+      {/* detail panel */}
+      {selected && (
+        <div className="rounded-xl border border-accent/40 bg-card p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">{selected.name}</h2>
+              <p className="mt-0.5 text-xs text-muted">{selected.description || "No description"}</p>
+            </div>
+            <button onClick={() => setSelected(null)} className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-foreground">
+              Close
+            </button>
+          </div>
+          {summary ? (
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <div>
+                <div className="text-xs text-muted">Budget</div>
+                <div className="mt-1 text-lg font-bold">{fmtMoney(summary.budget_cents)}</div>
+                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-background">
+                  <div
+                    className={`h-full rounded-full ${summary.budget_used_pct != null && summary.budget_used_pct > 90 ? "bg-danger" : "bg-accent"}`}
+                    style={{ width: `${Math.min(100, summary.budget_used_pct ?? 0)}%` }}
+                  />
+                </div>
+                <div className="mt-1 text-xs text-muted">
+                  {fmtMoney(summary.spent_cents)} spent · {fmtMoney(summary.remaining_cents)} left
+                  {summary.budget_used_pct != null && <span> · {summary.budget_used_pct}%</span>}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-muted">Time logged</div>
+                <div className="mt-1 text-lg font-bold">{fmtDuration(summary.time_minutes)}</div>
+                <div className="mt-1 text-xs text-muted">{summary.time_entries} entr{summary.time_entries === 1 ? "y" : "ies"} · {summary.expenses} expense{summary.expenses === 1 ? "" : "s"}</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted">Milestones</div>
+                <div className="mt-1 text-lg font-bold">{summary.milestones_done}/{summary.milestones_total}</div>
+                <div className="mt-1 text-xs text-muted">completed</div>
+              </div>
+            </div>
+          ) : (
+            <div className="skeleton mt-4 h-20 w-full rounded-lg" />
+          )}
+
+          {/* milestones */}
+          <div className="mt-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-muted">Milestones</h3>
+            <div className="mt-2 space-y-1.5">
+              {summary?.milestones.map((m) => (
+                <div key={m.id} className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2">
+                  <button onClick={() => toggleMilestone(m)} disabled={busy === m.id || !canEdit} className="flex min-w-0 items-center gap-2 text-left disabled:opacity-50">
+                    <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${m.status === "done" ? "border-success bg-success text-white" : "border-border"}`}>
+                      {m.status === "done" && <Check size={10} />}
+                    </span>
+                    <span className={`truncate text-sm ${m.status === "done" ? "text-muted line-through" : "text-foreground"}`}>{m.title}</span>
+                  </button>
+                  {m.due_date && <span className="shrink-0 text-xs text-muted">{m.due_date}</span>}
+                </div>
+              ))}
+              {summary && summary.milestones.length === 0 && (
+                <div className="text-xs text-faint">No milestones yet.</div>
+              )}
+            </div>
+            {canEdit && (
+              <div className="mt-2 flex items-center gap-2">
+                <input value={fMilestone} onChange={(e) => setFMilestone(e.target.value)} placeholder="Add a milestone…"
+                  className="flex-1 rounded-lg border border-border bg-background px-3 py-1.5 text-sm text-foreground outline-none focus:border-accent" />
+                <button onClick={addMilestone} disabled={busy === "milestone" || !fMilestone.trim()}
+                  className="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:brightness-110 disabled:opacity-50">
+                  Add
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* list */}
+      {loading ? (
+        <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="skeleton h-16 w-full rounded-xl" />)}</div>
+      ) : (
+        <div className="space-y-2">
+          {projects.map((p) => (
+            <div key={p.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
+              <button onClick={() => setSelected(p)} className="flex min-w-0 items-center gap-3 text-left">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-background text-muted">
+                  <FolderKanban size={16} />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold">{p.name}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] capitalize ${PROJECT_STATUS_STYLE[p.status] ?? "bg-background text-muted"}`}>
+                      {p.status.replace("_", " ")}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    <span className="font-mono">/{p.slug}</span>
+                    {p.budget_cents > 0 && <span> · budget {fmtMoney(p.budget_cents, p.currency)}</span>}
+                    {p.start_date && <span> · {p.start_date} → {p.end_date || "…"}</span>}
+                  </div>
+                </div>
+              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                {canEdit && p.status !== "completed" && p.status !== "cancelled" && (
+                  <button onClick={() => setStatus(p, "completed")} disabled={busy === p.id}
+                    className="rounded-lg border border-border px-3 py-1 text-xs text-muted transition hover:text-success disabled:opacity-50">
+                    Complete
+                  </button>
+                )}
+                {isAdmin && (
+                  <button onClick={() => remove(p)} disabled={busy === p.id}
+                    className="rounded-lg border border-border px-2 py-1 text-xs text-muted transition hover:text-danger disabled:opacity-50">
+                    <Trash2 size={12} />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          {projects.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-sm text-muted">
+              No projects yet. Create one to organize budgeted work.
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

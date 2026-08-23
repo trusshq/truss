@@ -35,6 +35,7 @@ class ExpenseIn(BaseModel):
     occurred_on: str = ""
     notes: str = ""
     receipt_file_id: str | None = None
+    project_id: str | None = None
 
 
 class ExpenseUpdateIn(BaseModel):
@@ -77,6 +78,7 @@ def _serialize(e: Expense) -> dict:
         "status": e.status,
         "submitted_by": str(e.submitted_by) if e.submitted_by else None,
         "receipt_file_id": str(e.receipt_file_id) if e.receipt_file_id else None,
+        "project_id": str(e.project_id) if e.project_id else None,
         "reviewed_by": str(e.reviewed_by) if e.reviewed_by else None,
         "review_note": e.review_note,
         "reviewed_at": e.reviewed_at or None,
@@ -97,6 +99,7 @@ async def create_expense(body: ExpenseIn, auth: AuthContext = Depends(require_me
         notes=body.notes,
         submitted_by=auth.user_id,
         receipt_file_id=_validate_file_id(body.receipt_file_id),
+        project_id=_validate_file_id(body.project_id),
     )
     db.add(expense)
     await db.flush()

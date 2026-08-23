@@ -52,6 +52,7 @@ SUITES = [
     "kb_smoke_test.py",
     "time_smoke_test.py",
     "expenses_smoke_test.py",
+    "projects_smoke_test.py",
 ]
 
 

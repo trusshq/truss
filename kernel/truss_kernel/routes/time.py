@@ -42,6 +42,7 @@ class EntryIn(BaseModel):
     duration_minutes: int | None = Field(default=None, ge=0)
     object: str | None = None
     record_id: str | None = None
+    project_id: str | None = None
     notes: str = ""
 
 
@@ -57,6 +58,7 @@ class TimerStartIn(BaseModel):
     description: str = ""
     object: str | None = None
     record_id: str | None = None
+    project_id: str | None = None
 
 
 def _validate_record_id(record_id: str | None) -> uuid.UUID | None:
@@ -82,6 +84,7 @@ def _serialize(e: TimeEntry, running_minutes: int | None = None) -> dict:
         "running": running,
         "object": e.object_slug,
         "record_id": str(e.record_id) if e.record_id else None,
+        "project_id": str(e.project_id) if e.project_id else None,
         "user_id": str(e.user_id) if e.user_id else None,
         "notes": e.notes,
         "created_at": e.created_at.isoformat() if e.created_at else None,
@@ -108,6 +111,7 @@ async def create_entry(body: EntryIn, auth: AuthContext = Depends(require_member
         duration_minutes=duration,
         object_slug=body.object,
         record_id=_validate_record_id(body.record_id),
+        project_id=_validate_record_id(body.project_id),
         user_id=auth.user_id,
         notes=body.notes,
     )
@@ -220,6 +224,7 @@ async def start_timer(body: TimerStartIn, auth: AuthContext = Depends(require_me
         started_at=now,
         object_slug=body.object,
         record_id=_validate_record_id(body.record_id),
+        project_id=_validate_record_id(body.project_id),
         user_id=auth.user_id,
     )
     db.add(entry)

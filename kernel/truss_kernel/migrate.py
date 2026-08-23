@@ -36,6 +36,9 @@ COLUMN_MIGRATIONS: list[tuple[str, str, str, str]] = [
     # Phase B: goal + delegation links on agent tasks
     ("agent_tasks", "goal_id", "UUID", "NULL"),
     ("agent_tasks", "delegated_by_agent_id", "UUID", "NULL"),
+    # Phase T: project links on time entries and expenses
+    ("time_entries", "project_id", "UUID", "NULL"),
+    ("expenses", "project_id", "UUID", "NULL"),
 ]
 
 

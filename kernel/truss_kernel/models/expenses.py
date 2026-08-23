@@ -35,3 +35,5 @@ class Expense(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     reviewed_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     review_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
     reviewed_at: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    # Phase T: optional project link
+    project_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)

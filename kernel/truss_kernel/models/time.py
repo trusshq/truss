@@ -29,3 +29,5 @@ class TimeEntry(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     record_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Phase T: optional project link
+    project_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
